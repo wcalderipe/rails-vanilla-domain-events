@@ -28,7 +28,7 @@ The failure mode that matters is always the same dual write: the domain database
 
 | Feature | How it is solved | Where |
 |---|---|---|
-| Atomic fact recording | The event row is inserted inside the domain transaction; the fact commits with the state change or not at all | `Eventable#track_event`, `app/models/concerns/eventable.rb` |
+| Atomic fact recording | The event row is inserted inside the domain transaction; the fact commits with the state change or not at all | `Eventable#publish_event`, `app/models/concerns/eventable.rb` |
 | Lost fanout is detectable | Fanout stamps `dispatched_at` after enqueueing; a crash in between leaves it null instead of leaving silence | `Event#dispatch`, `app/models/event.rb` |
 | Lost fanout is recovered | A recurring relay re-dispatches undispatched events older than `RELAY_AFTER` (the Polling Publisher half of the outbox pattern) | `Event::RelayJob`, `config/recurring.yml` |
 | At-least-once delivery, made safe | The relay redoes the whole fanout, so consumers are idempotent by contract; both standard shapes are demonstrated | natural key: `Order::Confirmation` (unique on `order_id`); event-id dedup: `Inventory::Adjustment` (unique on `event_id`, stock derived by sum) |
@@ -43,7 +43,7 @@ The failure mode that matters is always the same dual write: the domain database
 
 Recording the event and telling the world about it are two writes:
 
-1. `track_event` inserts the `Event` row **inside the domain transaction**: the fact commits atomically with the state change it records. This part is durable by construction.
+1. `publish_event` inserts the `Event` row **inside the domain transaction**: the fact commits atomically with the state change it records. This part is durable by construction.
 2. `after_create_commit` then enqueues one job per subscriber. This is a **dual write**: if the process dies between the commit and the enqueue (deploy restart, OOM kill, crash), the fact exists but nobody ever reacts to it.
 
 `after_create_commit` alone cannot close that gap; it can only make it rare. Worse, without a marker the failure is **invisible**: the row looks like every other row, and the missed side effect (an email never sent, access never granted) surfaces as a support ticket, not an error.
@@ -66,7 +66,7 @@ sequenceDiagram
   rect rgb(230, 245, 230)
     note over O,DB: one transaction — atomic
     O->>DB: payment state record
-    O->>DB: event row (track_event)
+    O->>DB: event row (publish_event)
   end
 
   DB-->>O: after_create_commit
@@ -117,4 +117,4 @@ There is no library to learn, no broker to operate, and nothing to upgrade. The 
 - `Event` is append-only on the domain side: `attr_readonly` on `eventable`, `action`, `payload`. `dispatched_at` is outbox bookkeeping, not part of the fact, so it stays writable.
 - The fact and the reaction are decoupled by the registry (`config/initializers/event_subscriptions.rb`): events without subscribers are still recorded; history does not depend on who listens.
 - `Event.dispatch_after_create` exists as an internal seam for tests and the demo: turning it off simulates the crash between commit and fanout deterministically.
-- The interface is small (`track_event`, `Event.subscribe`; the relay is invisible to callers); the outbox mechanics hide behind it. Deleting the mechanism would push dispatch bookkeeping into every emitting model, which is the deletion-test argument for keeping it a deep module.
+- The interface is small (`publish_event`, `Event.subscribe`; the relay is invisible to callers); the outbox mechanics hide behind it. Deleting the mechanism would push dispatch bookkeeping into every emitting model, which is the deletion-test argument for keeping it a deep module.

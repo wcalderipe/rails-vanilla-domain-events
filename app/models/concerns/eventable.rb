@@ -7,7 +7,7 @@ module Eventable
 
   # Runs in the caller's transaction: the fact commits atomically with the
   # state change it records. This is the outbox write.
-  def track_event(action, **payload)
+  def publish_event(action, **payload)
     events.create!(action:, payload:)
   end
 end

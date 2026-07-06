@@ -14,7 +14,7 @@ class Order < ApplicationRecord
   def self.place(customer_email:, item:, quantity: 1)
     transaction do
       order = create!(customer_email:, item:, quantity:)
-      order.track_event("order.placed", item:, quantity:)
+      order.publish_event("order.placed", item:, quantity:)
       order
     end
   end
@@ -22,7 +22,7 @@ class Order < ApplicationRecord
   def pay
     transaction do
       create_payment!
-      track_event("order.paid", item:, quantity:, customer_email:)
+      publish_event("order.paid", item:, quantity:, customer_email:)
     end
   end
 
@@ -31,7 +31,7 @@ class Order < ApplicationRecord
 
     transaction do
       create_shipment!
-      track_event("order.shipped", item:, quantity:)
+      publish_event("order.shipped", item:, quantity:)
     end
   end
 

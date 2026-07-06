@@ -4,7 +4,7 @@ class Order::ConfirmationTest < ActiveSupport::TestCase
   setup do
     Event.dispatch_after_create = false
     @order = orders(:keyboard)
-    @event = @order.track_event("order.paid", item: @order.item, quantity: @order.quantity)
+    @event = @order.publish_event("order.paid", item: @order.item, quantity: @order.quantity)
   end
 
   teardown do

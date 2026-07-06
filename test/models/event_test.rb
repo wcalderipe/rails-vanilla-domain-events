@@ -10,17 +10,17 @@ class EventTest < ActiveSupport::TestCase
     Event.dispatch_after_create = true
   end
 
-  test "track_event records the fact in the caller's transaction" do
+  test "publish_event records the fact in the caller's transaction" do
     assert_no_difference -> { Event.count } do
       Order.transaction do
-        @order.track_event("order.paid", item: @order.item)
+        @order.publish_event("order.paid", item: @order.item)
         raise ActiveRecord::Rollback
       end
     end
   end
 
   test "the fact is immutable once persisted" do
-    event = @order.track_event("order.paid", item: @order.item)
+    event = @order.publish_event("order.paid", item: @order.item)
 
     assert_raises ActiveRecord::ReadonlyAttributeError do
       event.action = "order.refunded"
@@ -28,7 +28,7 @@ class EventTest < ActiveSupport::TestCase
   end
 
   test "dispatch enqueues one job per subscriber and marks the fanout done" do
-    event = @order.track_event("order.paid", item: @order.item, quantity: 1)
+    event = @order.publish_event("order.paid", item: @order.item, quantity: 1)
 
     assert_enqueued_jobs 2 do
       event.dispatch
@@ -39,7 +39,7 @@ class EventTest < ActiveSupport::TestCase
   end
 
   test "dispatch is a no-op when the fanout already completed" do
-    event = @order.track_event("order.paid", item: @order.item, quantity: 1)
+    event = @order.publish_event("order.paid", item: @order.item, quantity: 1)
     event.dispatch
 
     assert_no_enqueued_jobs do
@@ -48,7 +48,7 @@ class EventTest < ActiveSupport::TestCase
   end
 
   test "an action without subscribers still marks the fanout done" do
-    event = @order.track_event("order.shipped", item: @order.item)
+    event = @order.publish_event("order.shipped", item: @order.item)
 
     assert_no_enqueued_jobs { event.dispatch }
     assert event.dispatched?
@@ -58,11 +58,11 @@ class EventTest < ActiveSupport::TestCase
     stranded = fresh = dispatched = nil
 
     travel_to (Event::RELAY_AFTER + 1.minute).ago do
-      stranded = @order.track_event("order.paid", item: @order.item)
-      dispatched = @order.track_event("order.shipped", item: @order.item)
+      stranded = @order.publish_event("order.paid", item: @order.item)
+      dispatched = @order.publish_event("order.shipped", item: @order.item)
       dispatched.dispatch
     end
-    fresh = @order.track_event("order.placed", item: @order.item)
+    fresh = @order.publish_event("order.placed", item: @order.item)
 
     assert_includes Event.stranded, stranded
     assert_not_includes Event.stranded, fresh
@@ -71,7 +71,7 @@ class EventTest < ActiveSupport::TestCase
 
   test "relay_stranded re-dispatches every stranded event" do
     event = travel_to (Event::RELAY_AFTER + 1.minute).ago do
-      @order.track_event("order.paid", item: @order.item, quantity: 1)
+      @order.publish_event("order.paid", item: @order.item, quantity: 1)
     end
 
     assert_enqueued_jobs 2 do
