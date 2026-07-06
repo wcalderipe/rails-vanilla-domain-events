@@ -55,10 +55,31 @@ Two pieces on top of the plain Eventable pattern:
 - **A dispatch marker** (`events.dispatched_at`). Fanout enqueues the subscriber jobs and then stamps the marker. A crash anywhere in between leaves `dispatched_at` null, which makes the stranded event *detectable*.
 - **A relay** (`Event::RelayJob`, scheduled every minute in `config/recurring.yml`). It re-dispatches any undispatched event older than `Event::RELAY_AFTER`, so no committed fact stays unannounced. This is the Message Relay / Polling Publisher half of the outbox pattern.
 
-```
-domain tx:   [ state change + event row ]        -- atomic
-post-commit: enqueue jobs, set dispatched_at     -- can fail, detectable
-relay:       every minute, re-dispatch stranded  -- closes the gap
+```mermaid
+sequenceDiagram
+  participant O as Order#pay
+  participant DB as Domain DB
+  participant Q as Solid Queue
+  participant S as Subscriber jobs
+  participant R as Event::RelayJob
+
+  rect rgb(230, 245, 230)
+    note over O,DB: one transaction — atomic
+    O->>DB: payment state record
+    O->>DB: event row (track_event)
+  end
+
+  DB-->>O: after_create_commit
+  O->>Q: enqueue 1 job per subscriber
+  O->>DB: stamp dispatched_at
+  Q->>S: perform (retry_on, idempotent)
+
+  note over O,Q: 💥 crash between commit and enqueue?<br/>fact persisted, dispatched_at stays null
+  loop every minute
+    R->>DB: stranded events (dispatched_at IS NULL, older than RELAY_AFTER)
+    R->>Q: re-dispatch fanout
+    R->>DB: stamp dispatched_at
+  end
 ```
 
 ## The consequence: at-least-once, so consumers are idempotent
