@@ -20,7 +20,15 @@ class Event < ApplicationRecord
   after_create_commit :dispatch, if: :dispatch_after_create
 
   class << self
+    # The subscriber is registered as a string, not a constant, for the same
+    # reason associations take class_name: as a string: dispatch resolves it
+    # with constantize at call time, so it always hits the currently loaded
+    # class across dev reloads (a captured constant would go stale, and Set
+    # would accumulate one dead class object per reload). The eager
+    # constantize below keeps the string honest: a typo explodes here, at
+    # registration, not on the first dispatch.
     def subscribe(action, job_class_name)
+      job_class_name.constantize
       subscriptions[action] << job_class_name
     end
 

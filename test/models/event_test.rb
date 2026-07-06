@@ -10,6 +10,13 @@ class EventTest < ActiveSupport::TestCase
     Event.dispatch_after_create = true
   end
 
+  test "subscribing an unknown class explodes at registration" do
+    assert_raises NameError do
+      Event.subscribe("order.paid", "Order::TypoJob")
+    end
+    assert_not_includes Event.subscribers_for("order.paid"), "Order::TypoJob"
+  end
+
   test "publish_event records the fact in the caller's transaction" do
     assert_no_difference -> { Event.count } do
       Order.transaction do
