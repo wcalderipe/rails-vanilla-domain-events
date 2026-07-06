@@ -6,6 +6,9 @@ This repo exists to make one argument, in the spirit of [Vanilla Rails is plenty
 
 Domain: an `Order` you can place, pay, and ship. Paying records an `order.paid` event; two subscribers react (customer confirmation, inventory adjustment).
 
+> [!WARNING]
+> This is an experiment, not battle-tested production code. The mechanics are exercised by the test suite and the guided demo, but the pattern has not carried production traffic. Read it as a reference implementation to study and adapt, not as something to vendor in as-is.
+
 ## Run it
 
 ```sh
