@@ -1,0 +1,9 @@
+keyboard:
+  customer_email: bob@example.com
+  item: keyboard
+  quantity: 2
+
+mouse:
+  customer_email: carol@example.com
+  item: mouse
+  quantity: 1
