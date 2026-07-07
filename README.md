@@ -21,78 +21,83 @@ bin/demo        # the guided walkthrough from chapter 1, still green
 
 ## How to read this repo
 
-Reliable eventing is a chain of questions, each one only askable once the previous is answered. This repo is organized as that chain: `main` states the problem and holds the naive starting point (`Rails.event.notify`, a log line and nothing more); each chapter lives on its own branch, takes the next question, changes the code to answer it, and extends this same document. This branch is chapter 4.
+Reliable eventing is a chain of questions, each one only askable once the previous is answered. This repo is organized as that chain: `main` states the problem and holds the naive starting point (`Rails.event.notify`, a log line and nothing more); each chapter lives on its own branch, takes the next question, changes the code to answer it, and extends this same document. This branch is chapter 5.
 
 Earlier chapters are not repeated here; each link below goes to that chapter's README.
 
 1. [Did we tell the queue?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/1-did-we-tell-the-queue)
 2. [Did the thing actually happen?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/2-did-the-thing-actually-happen)
 3. [Which subscriber is actually done?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/3-which-subscriber-is-actually-done)
-4. **Who guards the guard? (📍 you're here)**
-5. [Did we say it twice?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/5-did-we-say-it-twice)
+4. [Who guards the guard?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/4-who-guards-the-guard)
+5. **Did we say it twice? (📍 you're here)**
 6. [In what order do facts arrive?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/6-in-what-order-do-facts-arrive)
 7. [What exactly did we say?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/7-what-exactly-did-we-say)
 8. [How long do we remember?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/8-how-long-do-we-remember)
 9. [What breaks when we leave SQLite?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/9-what-breaks-when-we-leave-sqlite)
 
-## Question 4: Who guards the guard?
+## Question 5: Did we say it twice?
 
-Every guarantee so far leans on one worker: `Event::RelayJob`, sweeping every minute for lost fanouts (tier 1) and lost effects (tier 2). Chapter 4 asks what happens when the guard itself misbehaves. There are three failure modes, and the repo principle shows clearly here: two of them are answered almost entirely by machinery Solid Queue already ships.
+Everything so far dedupes the journey of one event: the same row can be re-announced, re-enqueued, and re-delivered, and exactly one effect survives. None of it dedupes the fact itself. Call `publish_event` twice for the same payment and you get two rows with two ids; both fan out, and the stock is adjusted twice for one payment. Delivery idempotency and publication idempotency are different problems, and only the first one was solved.
 
-### Overlapping ticks: the semaphore the queue already has
+### Every existing defense, and where it stops
 
-The recurring schedule guarantees one enqueue of the relay per minute. It does not guarantee that tick N finished before tick N+1 starts. Under a large backlog, two relays scan the same stranded events and stale deliveries, both enqueue the full fanout, and every duplicate burns a delivery's `attempts` twice as fast, corrupting the `MAX_ATTEMPTS` accounting that chapter 3 made load-bearing.
+The proving tests walk each layer against the same scenario, one test per defense (`test/models/event_publication_test.rb`):
 
-The fix is one line, because Solid Queue ships a semaphore:
+1. Event-id dedup (`Inventory::Adjustment`, unique on `event_id`) catches duplicate deliveries of one row. Two publications are two rows with two ids, so it applies both. This is the layer people expect to catch it, and it cannot.
+2. Natural-key dedup (`Order::Confirmation`, unique on `order_id`) happens to absorb the duplicate, but only because its key is domain-scoped. That is luck of the key choice, not a property of the mechanism: the previous defense uses the same mechanism and fails.
+3. Delivery records (chapter 3) dedupe per (event, subscriber). Two events mean two deliveries per subscriber, both legitimate from where they stand.
+4. The relay never duplicates a publication. It re-announces an existing row; it cannot mint a second one.
+5. The domain's own unique state records protect anchored facts: a second `Order#pay` dies on the `order_payments` unique index before its event row exists, and the duplicate fact rolls back with the losing transaction. But that only covers facts that have such an anchor.
+
+Each layer is doing its job correctly. None of them owns publication identity, so something has to.
+
+### Two classes of publication
+
+The fifth defense is the interesting one, because it splits publications into two classes:
+
+A fact anchored in a unique state record needs nothing. `Order#pay` creates the payment and publishes the event in one transaction; the payment's unique index means that transaction cannot commit twice, and the event rides on that guarantee. This is why the emitters in `Order` carry no key: leaving them bare is the proof that the class exists.
+
+A free-standing fact, published with no accompanying uniquely-constrained write, has no anchor. Webhook handlers reprocessing a provider callback, backfill scripts run twice, an import re-executed after a partial failure: these are the publishers that say things twice. They need to carry their identity explicitly:
 
 ```ruby
-class Event::RelayJob < ApplicationJob
-  limits_concurrency key: "event_relay", to: 1
+order.publish_event("order.paid", idempotence_key: "kiwify/#{order_id}", ...)
+```
+
+### The mechanism: the consumers' grammar, one layer up
+
+`events.idempotence_key` is a nullable column with a unique partial index (`WHERE idempotence_key IS NOT NULL`). `publish_event` inserts first and rescues `RecordNotUnique` by returning the already-recorded fact:
+
+```ruby
+def publish_event(action, idempotence_key: nil, **payload)
+  events.create!(action:, payload:, idempotence_key:)
+rescue ActiveRecord::RecordNotUnique
+  raise if idempotence_key.nil?
+  events.find_by!(idempotence_key:)
 end
 ```
 
-Verified semantics, from the gem source (solid_queue 1.4.0): a job enqueued while another holds the semaphore is blocked, not dropped. The default `on_conflict` is `:block` (`lib/active_job/concurrency_controls.rb`), which parks the job as a `SolidQueue::BlockedExecution`. When the running relay finishes, its job row is destroyed and the destroy callback releases the semaphore and unblocks the next waiter (`app/models/solid_queue/job/concurrency_controls.rb`). If the holder crashes without finishing, the semaphore expires after the concurrency `duration` (3 minutes by default, `lib/solid_queue.rb`), and the dispatcher's maintenance loop releases expired blocked executions (`app/models/solid_queue/blocked_execution.rb`). So a crashed relay delays the next tick by at most the duration; it cannot deadlock the schedule.
-
-One honest caveat: the `:test` adapter never touches Solid Queue's job models, so this declaration is inert in the test suite. There is no test asserting the semaphore because a test that cannot fail is worse than a documented behavior; the semantics above come from reading the gem, with file references so you can check.
+Insert-first, not check-then-act: a lookup before the insert would race exactly the way the consumers avoid by rescuing their unique indexes. The key joins the `attr_readonly` list because it is part of the fact. Republishing becomes a no-op that hands back the recorded event, so the caller cannot tell (and does not need to know) whether it was first.
 
 ```mermaid
 sequenceDiagram
-  participant S as Recurring schedule
-  participant Q as Solid Queue
-  participant R1 as Relay tick N
-  participant R2 as Relay tick N+1
+  participant P as Publisher (retried webhook)
+  participant E as events
+  participant S as Subscribers
 
-  S->>Q: enqueue tick N
-  Q->>R1: run (acquires semaphore event_relay)
-  S->>Q: enqueue tick N+1 (a minute later, N still sweeping)
-  Q--xR2: semaphore taken: blocked, not dropped
-  R1-->>Q: finishes (semaphore released)
-  Q->>R2: unblocked, runs alone
+  P->>E: publish_event(key: "kiwify/123")
+  E->>S: fanout, effects applied once
+
+  P->>E: publish_event(key: "kiwify/123") again
+  note over E: INSERT hits the unique partial index
+  E-->>P: existing row returned, no new fanout
+
+  rect rgb(255, 235, 235)
+    note over P,S: without a key: second INSERT succeeds,<br/>two rows, two fanouts, stock adjusted twice
+  end
 ```
 
-But that diagram hides a sharp edge, and it is the one place this chapter's first cut was wrong: **the semaphore is a fixed-TTL lease, not a lock held for the job's lifetime.** Reading the gem more carefully (`app/models/solid_queue/semaphore.rb`): `expires_at` is stamped once, at acquisition, as `concurrency_duration.from_now` (3 minutes by default), and it is never refreshed while the job runs. The dispatcher's maintenance loop reaps *any* expired lease (`Semaphore.expired.in_batches(&:delete_all)`), with no check that the holder is still alive. So the "if the holder crashes" case is not the only way the lease is released: a tick that simply *runs longer than three minutes* has its lease deleted out from under it, the next tick unblocks, and the two run **concurrently**. That is exactly the double-dispatch, two ticks re-driving the same stranded events and stale deliveries, that the semaphore was introduced to prevent, and it reappears precisely under a backlog, which is when the relay matters most.
+One honesty note for later: rescuing `RecordNotUnique` inside the caller's open transaction is fine on SQLite, where a failed statement does not poison the transaction. On PostgreSQL it does, and this rescue needs a savepoint around the insert. The consumers carry the same caveat; both belong to question 9.
 
-The semaphore alone, then, is necessary but not sufficient. The other half is keeping every tick comfortably shorter than the lease, so it never comes to this. Both sweeps are bounded (`RELAY_BATCH` events in tier 1, `RELAY_BATCH` deliveries in tier 2, oldest first), so a tick does a bounded amount of work no matter how deep the backlog, and the remainder is simply re-selected next minute (the `stranded` and `stale` scopes are gap-safe: leftover rows still match). A ten-thousand-event backlog drains over twenty short ticks, none of them near the lease.
+### The limit: same fact once, but in what order?
 
-The honest framing: on SQLite the lease is the approximation available; the real fix, when the queue moves to Postgres, is `pg_try_advisory_xact_lock` around the sweep, a lock with no TTL that releases at transaction end. Until then, the bound is what makes the lease trustworthy. The bound is pinned in `test/jobs/relay_batch_test.rb` (the semaphore itself stays untestable under the `:test` adapter, so the test asserts the thing that *is* testable: a tick never exceeds the batch).
-
-### A poison item must not stop the sweep
-
-Both sweeps used to iterate with a bare `find_each`, so one raising item aborted everything behind it in the batch, and a tier 1 explosion also starved tier 2, because `perform` runs the tiers sequentially. One poison event throttled every recovery in the system.
-
-The fix is the repo's usual error-handling shape, applied per item: rescue, report with the item's id via `Rails.error.report`, continue the loop (`Event.relay_stranded`, `Event::Delivery.redeliver_stale`). A poison item stays exactly where it was, stranded or pending, which means it stays visible: the next tick retries it, the error reporter has its id, and the health reading below keeps pointing at it until someone acts. Nothing is skipped silently.
-
-The integration tests drive this through a real `Event::RelayJob.perform_now` tick: a poison event in tier 1 and a poison delivery in tier 2, in the same tick, with the healthy work behind them still done and the counts reflecting only what succeeded (`test/models/event_relay_guard_test.rb`).
-
-### When the guard itself dies
-
-Solid Queue shows jobs that failed. It has nothing that says a recurring job never ran: if the scheduler stops, stranded events and stale deliveries accumulate with no signal anywhere. This is the one place in this chapter where the framework genuinely stops, so it is the one place that earns new code, and the code is small:
-
-- Each tick emits a liveness signal with its counts: `Rails.event.notify("event_relay.swept", stranded:, redelivered:, failed:)`. A monitor alerts on the absence of this signal.
-- Two health readings answer "how far behind is the guard?": `Event.oldest_stranded_age` and `Event::Delivery.oldest_pending_age`, the age in seconds of the oldest item still waiting. Healthy systems keep both near zero; a growing age means the guard is asleep or a poison item is stuck.
-
-The alert rule, stated plainly: page if no `event_relay.swept` event arrives for a few minutes, or if either age exceeds a small multiple of the sweep interval. The alarm itself lives in the ops stack (log-based alerting, a metrics scraper); the repo's job is to provide the signal, and now it does.
-
-### The limit: nothing stops the same fact from being said twice
-
-The guard now protects delivery end to end: fanout recovered, effects recovered, the guard itself serialized, poison isolated, silence detectable. All of it assumes each fact was published once. Nothing enforces that: publishing the same fact twice creates two event rows with two ids, and a consumer that dedupes by event id applies both. Today the domain's own state records prevent it by accident. Making publication idempotent on purpose is the next question: **Did we say it twice?**
+The key gives a fact identity, so saying it twice collapses into saying it once. It says nothing about when a fact lands relative to its neighbors: consumers can still observe `order.shipped` before `order.paid` under retries and redeliveries. Ordering is the next question: **In what order do facts arrive?**
