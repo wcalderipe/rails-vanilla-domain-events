@@ -21,7 +21,7 @@ def show_effects(order)
   say "confirmed? #{order.reload.confirmed?}   on hand (#{order.item}): #{Inventory.on_hand(order.item)}"
 end
 
-[ Inventory::Adjustment, Order::Confirmation, Event, Order::Payment, Order::Shipment, Order ].each(&:delete_all)
+[ Inventory::Adjustment, Order::Confirmation, Event::Delivery, Event, Order::Payment, Order::Shipment, Order ].each(&:delete_all)
 
 banner "1. Happy path: place + pay, fanout runs after commit"
 order = Order.place(customer_email: "bob@example.com", item: "keyboard", quantity: 2)
