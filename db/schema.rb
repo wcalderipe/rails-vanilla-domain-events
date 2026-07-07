@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_07_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_07_120001) do
   create_table "event_deliveries", force: :cascade do |t|
     t.integer "attempts", default: 0, null: false
     t.datetime "created_at", null: false
@@ -30,10 +30,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_07_000001) do
     t.datetime "dispatched_at"
     t.integer "eventable_id", null: false
     t.string "eventable_type", null: false
+    t.string "idempotence_key"
     t.json "payload", default: {}, null: false
     t.datetime "updated_at", null: false
     t.index ["dispatched_at", "created_at"], name: "index_events_on_dispatched_at_and_created_at"
     t.index ["eventable_type", "eventable_id"], name: "index_events_on_eventable"
+    t.index ["idempotence_key"], name: "index_events_on_idempotence_key", unique: true, where: "idempotence_key IS NOT NULL"
   end
 
   create_table "inventory_adjustments", force: :cascade do |t|

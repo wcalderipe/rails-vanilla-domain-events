@@ -15,9 +15,9 @@ class Event < ApplicationRecord
   belongs_to :eventable, polymorphic: true
   has_many :deliveries, class_name: "Event::Delivery", dependent: :destroy
 
-  # Append-only on the domain side: the fact itself never changes.
-  # dispatched_at is outbox bookkeeping, not part of the fact, so it stays writable.
-  attr_readonly :eventable_id, :eventable_type, :action, :payload
+  # Append-only on the domain side: the fact never changes. dispatched_at is
+  # outbox bookkeeping, not part of the fact, so it stays writable.
+  attr_readonly :eventable_id, :eventable_type, :action, :payload, :idempotence_key
 
   # Test/demo seam: turning this off simulates a crash between the commit
   # and the fanout.

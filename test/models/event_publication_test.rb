@@ -71,6 +71,41 @@ class EventPublicationTest < ActiveSupport::TestCase
     end
   end
 
+  test "republishing with the same idempotence key applies effects exactly once" do
+    first = second = nil
+
+    perform_enqueued_jobs do
+      first = publish_paid_fact(idempotence_key: "order.paid/#{@order.id}")
+      second = publish_paid_fact(idempotence_key: "order.paid/#{@order.id}")
+    end
+
+    assert_equal first.id, second.id
+    assert_equal 1, @order.events.where(action: "order.paid").count
+    assert_equal Inventory::STARTING_STOCK - @order.quantity, Inventory.on_hand(@order.item)
+    assert_equal 1, Order::Confirmation.where(order: @order).count
+  end
+
+  test "different keys record different facts" do
+    publish_paid_fact(idempotence_key: "order.paid/#{@order.id}/1")
+    publish_paid_fact(idempotence_key: "order.paid/#{@order.id}/2")
+
+    assert_equal 2, @order.events.where(action: "order.paid").count
+  end
+
+  test "a nil key opts out of publication dedup" do
+    2.times { publish_paid_fact }
+
+    assert_equal 2, @order.events.where(action: "order.paid").count
+  end
+
+  test "the idempotence key is immutable once persisted" do
+    event = publish_paid_fact(idempotence_key: "order.paid/#{@order.id}")
+
+    assert_raises ActiveRecord::ReadonlyAttributeError do
+      event.idempotence_key = "another"
+    end
+  end
+
   private
     def publish_paid_fact(**options)
       @order.publish_event("order.paid", item: @order.item, quantity: @order.quantity, **options)
