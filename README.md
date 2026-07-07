@@ -26,7 +26,7 @@ A question links to the branch that works on it; a question without a link has n
 
 1. [Did we tell the queue?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/1-did-we-tell-the-queue)
 2. [Did the thing actually happen?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/2-did-the-thing-actually-happen)
-3. Which subscriber is actually done?
+3. [Which subscriber is actually done?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/3-which-subscriber-is-actually-done)
 4. Who guards the guard?
 5. Did we say it twice?
 6. In what order do facts arrive?
