@@ -26,7 +26,7 @@ Reliable eventing is a chain of questions, each one only askable once the previo
 The chain so far. A question links to the branch that works on it; a question without a link has no chapter yet.
 
 1. [Did we tell the queue?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/main) (`main`, this document)
-2. [Did the thing actually happen?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/1-from-enqueued-to-done)
+2. [Did the thing actually happen?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/2-did-the-thing-actually-happen)
 3. Which subscriber is actually done?
 4. Who guards the guard?
 5. Did we say it twice?
@@ -144,4 +144,4 @@ Notes on the shape of the code:
 
 ## The next question: Did the thing actually happen?
 
-Everything above guarantees the announcement, not the reaction. Once every subscriber's `perform_later` has returned and `dispatched_at` is stamped, the event is outside the relay's view — whether the subscriber job then succeeds, fails, or is discarded is invisible to the outbox. Answering that question is the next chapter, on the branch [`1-from-enqueued-to-done`](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/1-from-enqueued-to-done).
+Everything above guarantees the announcement, not the reaction. Once every subscriber's `perform_later` has returned and `dispatched_at` is stamped, the event is outside the relay's view — whether the subscriber job then succeeds, fails, or is discarded is invisible to the outbox. Answering that question is the next chapter, on the branch [`2-did-the-thing-actually-happen`](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/2-did-the-thing-actually-happen).
