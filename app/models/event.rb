@@ -38,10 +38,31 @@ class Event < ApplicationRecord
       @subscriptions ||= Hash.new { |hash, key| hash[key] = Set.new }
     end
 
-    # Pass 1 of the relay: re-dispatches events whose fanout was lost,
-    # making delivery at-least-once. Run on a schedule by Event::RelayJob.
+    # The Message Relay: re-dispatches events whose fanout was lost, making
+    # delivery at-least-once. Run on a schedule by Event::RelayJob. Rescued
+    # per item: one poison event must not abort the sweep for everything
+    # behind it (a reported, still-stranded event stays visible to the next
+    # tick and to oldest_stranded_age). Returns the swept count for the
+    # relay's liveness signal.
     def relay_stranded
-      stranded.find_each(&:dispatch)
+      swept = 0
+
+      stranded.find_each do |event|
+        event.dispatch
+        swept += 1
+      rescue StandardError => error
+        Rails.error.report(error, context: { event_id: event.id, action: event.action })
+      end
+
+      swept
+    end
+
+    # Age of the oldest event still waiting for its fanout, in seconds; nil
+    # when nothing is waiting. The relay's health reading: if this grows past
+    # the sweep interval, the guard is asleep.
+    def oldest_stranded_age
+      oldest = where(dispatched_at: nil).minimum(:created_at)
+      oldest && Time.current - oldest
     end
   end
 

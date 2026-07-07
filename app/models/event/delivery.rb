@@ -17,18 +17,36 @@ class Event::Delivery < ApplicationRecord
   scope :pending, -> { where(delivered_at: nil, failed_at: nil) }
   scope :stale, -> { pending.where(updated_at: ..REDELIVER_AFTER.ago) }
 
-  # Pass 2 of the relay: re-drives deliveries whose effect never landed.
-  # Exhausting MAX_ATTEMPTS is terminal, not another retry loop — the
-  # delivery is marked failed and reported, so a permanently broken
-  # subscriber pages a human instead of retrying forever.
+  # Tier 2 of the relay: re-drives deliveries whose effect never landed.
+  # Exhausting MAX_ATTEMPTS is a terminal transition, not another loop:
+  # the delivery fails and the failure is reported, so a permanently broken
+  # subscriber pages a human instead of retrying forever. Rescued per item:
+  # one poison delivery must not abort the sweep for everything behind it.
+  # Returns [redelivered, failed] counts for the relay's liveness signal.
   def self.redeliver_stale
+    redelivered = failed = 0
+
     stale.find_each do |delivery|
       if delivery.attempts >= MAX_ATTEMPTS
         delivery.mark_failed(error: "redelivery attempts exhausted")
+        failed += 1
       else
         delivery.deliver_later
+        redelivered += 1
       end
+    rescue StandardError => error
+      Rails.error.report(error, context: { delivery_id: delivery.id, subscriber: delivery.subscriber })
     end
+
+    [ redelivered, failed ]
+  end
+
+  # Age of the oldest delivery still waiting for its effect, in seconds; nil
+  # when nothing is pending. The relay's health reading: if this grows past
+  # the sweep interval, the guard is asleep.
+  def self.oldest_pending_age
+    oldest = pending.minimum(:updated_at)
+    oldest && Time.current - oldest
   end
 
   # Enqueue, then refresh the staleness clock — in that order. Note attempts
