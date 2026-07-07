@@ -98,6 +98,21 @@ class EventPublicationTest < ActiveSupport::TestCase
     assert_equal 2, @order.events.where(action: "order.paid").count
   end
 
+  test "the idempotence key is a global identity: reused across eventables, recovery returns the first fact" do
+    other = orders(:mouse)
+    first = publish_paid_fact(idempotence_key: "shared/key")
+
+    # A different eventable reuses the same key. The unique index is global
+    # (idempotence IS NOT NULL), so the second insert is rejected — and recovery
+    # must hand back the already-recorded fact, not look only inside this
+    # eventable's association (where it does not exist) and raise RecordNotFound.
+    second = other.publish_event("order.paid", item: other.item, quantity: other.quantity,
+                                 idempotence_key: "shared/key")
+
+    assert_equal first, second
+    assert_equal 1, Event.where(idempotence_key: "shared/key").count
+  end
+
   test "the idempotence key is immutable once persisted" do
     event = publish_paid_fact(idempotence_key: "order.paid/#{@order.id}")
 

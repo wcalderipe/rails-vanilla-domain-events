@@ -14,10 +14,16 @@ module Eventable
   # check-then-act, for the same TOCTOU reason the consumers dedupe with
   # unique indexes. Facts anchored in a unique state record do not need a
   # key: their transaction already cannot commit twice.
+  #
+  # Recovery reads through Event, not the `events` association: the unique index
+  # is GLOBAL (any idempotence_key is unique across every eventable), so the key
+  # is a free-standing identity, not a per-record one. A scoped `events.find_by!`
+  # would raise RecordNotFound when the same key was first recorded against a
+  # different eventable — the exact case a global key exists to collapse.
   def publish_event(action, idempotence_key: nil, **payload)
     events.create!(action:, payload:, idempotence_key:)
   rescue ActiveRecord::RecordNotUnique
     raise if idempotence_key.nil?
-    events.find_by!(idempotence_key:)
+    Event.find_by!(idempotence_key:)
   end
 end
