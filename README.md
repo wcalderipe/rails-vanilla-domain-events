@@ -4,6 +4,8 @@ Durable domain events with a transactional outbox, in 79 lines of plain Rails: A
 
 This repo exists to make one argument, in the spirit of [Vanilla Rails is plenty](https://dev.37signals.com/vanilla-rails-is-plenty/): before reaching for wisper, Kafka, or an eventing framework, check what the framework you already run gives you. Events as records (the Eventable pattern), fanned out to subscriber jobs, completed with a transactional outbox so no committed fact ever goes unannounced.
 
+A guiding principle follows from that argument: lean on Rails and Solid Queue internals as far as they go (transactions, `after_create_commit`, `retry_on`, failed executions, recurring tasks) and only write code where the framework stops. Every line here answers a question the stack does not.
+
 Domain: an `Order` you can place, pay, and ship. Paying records an `order.paid` event; two subscribers react (customer confirmation, inventory adjustment).
 
 > [!WARNING]
