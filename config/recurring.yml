@@ -16,3 +16,6 @@ production:
   event_relay:
     class: Event::RelayJob
     schedule: every minute
+  event_prune:
+    class: Event::PruneJob
+    schedule: every day at 4am

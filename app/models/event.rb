@@ -12,6 +12,10 @@ class Event < ApplicationRecord
   # stranded/stale scopes simply re-select it).
   RELAY_BATCH = 500
 
+  # How long the log remembers. The window is a business decision (audit
+  # needs, privacy: payloads carry PII); the mechanism only enforces it.
+  RETENTION = 90.days
+
   belongs_to :eventable, polymorphic: true
   has_many :deliveries, class_name: "Event::Delivery", dependent: :destroy
 
@@ -27,6 +31,18 @@ class Event < ApplicationRecord
   scope :chronologically, -> { order(:created_at, :id) }
   scope :dispatched, -> { where.not(dispatched_at: nil) }
   scope :stranded, -> { where(dispatched_at: nil).where(created_at: ..RELAY_AFTER.ago) }
+
+  # Prunable = old enough AND owing nothing: dispatched (an undispatched
+  # event still owes its whole fanout, however old) with no pending delivery
+  # (a pending delivery is work the relay may still re-drive; deleting the
+  # event would strand its job into chapter 2's discard_on, the silent drop
+  # the prune test documents). Terminal deliveries and zero-subscriber
+  # events are memory, not work, so age alone decides.
+  scope :prunable, -> {
+    dispatched
+      .where(created_at: ..RETENTION.ago)
+      .where.not(id: Event::Delivery.pending.select(:event_id))
+  }
 
   after_create_commit :dispatch, if: :dispatch_after_create
 
@@ -76,6 +92,28 @@ class Event < ApplicationRecord
     def oldest_stranded_age
       oldest = where(dispatched_at: nil).minimum(:created_at)
       oldest && Time.current - oldest
+    end
+
+    # Deletes prunable events in batches, deliveries first (the foreign key
+    # demands it). delete_all on purpose: neither model has destroy
+    # callbacks, so skipping them changes nothing today, and a prune that
+    # instantiated ninety days of rows to fire no-op callbacks would be
+    # ceremony. The dependent: :destroy on the association stays for one-off
+    # console destroys. Returns the pruned count for the liveness signal.
+    def prune(batch_size: 500)
+      pruned = 0
+
+      loop do
+        batch_ids = prunable.limit(batch_size).pluck(:id)
+        break if batch_ids.empty?
+
+        transaction do
+          Event::Delivery.where(event_id: batch_ids).delete_all
+          pruned += where(id: batch_ids).delete_all
+        end
+      end
+
+      pruned
     end
   end
 
