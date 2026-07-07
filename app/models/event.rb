@@ -3,6 +3,14 @@ class Event < ApplicationRecord
   # fanout (crashed process, lost enqueue) and is eligible for the relay.
   RELAY_AFTER = 1.minute
 
+  # Most events a single relay tick will touch, across BOTH sweeps. This caps
+  # how long a tick can run, which is load-bearing for the semaphore in
+  # Event::RelayJob: that guard is a fixed-TTL lease, not a lifetime lock, so a
+  # tick that outran the lease would lose its exclusivity mid-run and overlap
+  # the next tick. A backlog drains over several short ticks; the leftover is
+  # picked up on the next one (the stranded/stale scopes simply re-select it).
+  RELAY_BATCH = 500
+
   belongs_to :eventable, polymorphic: true
   has_many :deliveries, class_name: "Event::Delivery", dependent: :destroy
 
@@ -47,7 +55,9 @@ class Event < ApplicationRecord
     def relay_stranded
       swept = 0
 
-      stranded.find_each do |event|
+      # Bounded and oldest-first: at most RELAY_BATCH per tick (see the constant
+      # for why the bound matters), draining the longest-stranded events first.
+      stranded.chronologically.limit(RELAY_BATCH).each do |event|
         event.dispatch
         swept += 1
       rescue StandardError => error

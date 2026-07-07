@@ -26,7 +26,9 @@ class Event::Delivery < ApplicationRecord
   def self.redeliver_stale
     redelivered = failed = 0
 
-    stale.find_each do |delivery|
+    # Bounded and oldest-first, the same as tier 1 (Event::RELAY_BATCH): a tick
+    # must stay short enough not to outrun the relay's concurrency lease.
+    stale.order(:updated_at).limit(Event::RELAY_BATCH).each do |delivery|
       if delivery.attempts >= MAX_ATTEMPTS
         delivery.mark_failed(error: "redelivery attempts exhausted")
         failed += 1
