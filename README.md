@@ -23,17 +23,17 @@ bin/demo        # the guided walkthrough: happy path, redelivery, crash gap, rel
 
 Reliable eventing is a chain of questions, each one only askable once the previous is answered. This README is organized as that chain: **every section is a question the system must answer, followed by the design choices that answer it.** `main` answers the first question; each subsequent chapter lives on its own branch, takes the next question, and extends this same document.
 
-The full chain, as far as we can see it today. Questions without a branch are open: we know the shape of the answer (mostly from adversarial reviews of this code), but the chapter is not written and the code does not answer them yet.
+The chain so far. A question links to the branch that works on it; a question without a link has no chapter yet.
 
-1. **Did we tell the queue?** Answered here, on `main`, by the transactional outbox.
-2. **Did the thing actually happen?** In progress on `1-from-enqueued-to-done`. Solid Queue's retry and failed-execution machinery does most of the work. See [the next question](#the-next-question-did-the-thing-actually-happen) below.
-3. **Which subscriber is actually done?** Open. `dispatched_at` means "enqueued", not "effect done": a subscriber that fails after enqueue is invisible to the relay. The shape of the answer is a delivery record per (event, subscriber) and a relay that re-drives incomplete deliveries, upgrading the guarantee from at-least-once enqueue to at-least-once effect.
-4. **Who guards the guard?** Open. The relay itself can overlap under backlog (duplicate fanout), stall behind one poison event, or fail silently. The shape: an atomic claim, a rescue per event, and an alarm on the relay's own health.
-5. **Did we say it twice?** Open. Consumers dedupe duplicate *delivery*; nothing dedupes duplicate *publication*. Publishing the same fact twice creates two rows, and event-id consumers apply both. Today the domain's own state records prevent it by accident; that needs to be a stated contract.
-6. **In what order do facts arrive?** Open. The honest answer today is "unordered at-least-once", and it should be stated. If a consumer ever needs per-aggregate ordering, that is a per-stream serialization problem, designed deliberately.
-7. **What exactly did we say?** Open. Payload shape is an implicit contract the consumer does not own. The shape: a schema per action, owned by the emitter, with consumers failing loudly (discard and alert) on violation instead of retrying forever.
-8. **How long do we remember?** Open. Events accumulate forever, jobs carry references to event rows, and pruning can break in-flight work. Retention needs a policy, not a default.
-9. **What breaks when we leave SQLite?** Open. SQLite's single writer masks every dispatch race, and the relay's null-marker scan is gap-safe by construction. Postgres wakes the races (advisory locks answer them), and replacing the scan with a position cursor would reintroduce silent loss. That chapter is as much about what not to change as what to add.
+1. [Did we tell the queue?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/main) (`main`, this document)
+2. [Did the thing actually happen?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/1-from-enqueued-to-done)
+3. Which subscriber is actually done?
+4. Who guards the guard?
+5. Did we say it twice?
+6. In what order do facts arrive?
+7. What exactly did we say?
+8. How long do we remember?
+9. What breaks when we leave SQLite?
 
 ## The problem
 
