@@ -5,16 +5,23 @@ class OrderTest < ActiveSupport::TestCase
     @order = orders(:keyboard)
   end
 
-  test "place creates the order" do
-    order = Order.place(customer_email: "dave@example.com", item: "monitor", quantity: 3)
+  test "place creates the order and records order.placed atomically" do
+    order = nil
+    assert_difference -> { Event.count }, 1 do
+      order = Order.place(customer_email: "dave@example.com", item: "monitor", quantity: 3)
+    end
 
-    assert order.persisted?
-    assert_equal "monitor", order.item
+    event = order.events.chronologically.last
+    assert_equal "order.placed", event.action
+    assert_equal({ "item" => "monitor", "quantity" => 3 }, event.payload)
   end
 
-  test "pay creates the payment" do
-    @order.pay
+  test "pay creates the payment and records order.paid" do
+    assert_difference -> { Event.count }, 1 do
+      @order.pay
+    end
     assert @order.paid?
+    assert_equal "order.paid", @order.events.chronologically.last.action
   end
 
   test "paying twice raises" do
@@ -23,6 +30,15 @@ class OrderTest < ActiveSupport::TestCase
     assert_raises ActiveRecord::RecordInvalid do
       @order.reload.pay
     end
+  end
+
+  test "paying an order confirms it and adjusts inventory" do
+    perform_enqueued_jobs do
+      @order.pay
+    end
+
+    assert @order.reload.confirmed?
+    assert_equal Inventory::STARTING_STOCK - @order.quantity, Inventory.on_hand(@order.item)
   end
 
   test "ship requires payment" do
