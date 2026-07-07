@@ -15,5 +15,7 @@ class Order::ConfirmationJob < ApplicationJob
   # load net/smtp on the first delivery.
   retry_on Net::SMTPServerBusy, Timeout::Error, wait: :polynomially_longer, attempts: 5
 
-  def perform(event) = Order::Confirmation.record(event)
+  def perform(delivery)
+    delivery.fulfill { |event| Order::Confirmation.record(event) }
+  end
 end

@@ -4,6 +4,7 @@ class Event < ApplicationRecord
   RELAY_AFTER = 1.minute
 
   belongs_to :eventable, polymorphic: true
+  has_many :deliveries, class_name: "Event::Delivery", dependent: :destroy
 
   # Append-only on the domain side: the fact never changes. dispatched_at
   # is outbox bookkeeping, not part of the fact, so it stays writable.
@@ -45,15 +46,19 @@ class Event < ApplicationRecord
     end
   end
 
-  # Enqueue one job per subscriber, then mark the fanout done. A crash
-  # mid-fanout leaves dispatched_at nil, so the relay redoes the whole
-  # fanout — a subscriber can see the same event twice, so consumers must
-  # be idempotent.
+  # Upsert one delivery per subscriber, enqueue each, then mark the fanout
+  # done. dispatched_at now means "delivery rows exist and the initial
+  # enqueue was attempted"; whether each effect landed is the delivery's
+  # own record. A crash mid-fanout leaves dispatched_at nil and the relay
+  # redoes the fanout; create_or_find_by! (insert-first, resolved by the
+  # unique index) makes that re-run idempotent per delivery, and consumers
+  # stay idempotent because delivery is still at-least-once.
   def dispatch
     return if dispatched?
 
     self.class.subscribers_for(action).each do |job_class_name|
-      job_class_name.constantize.perform_later(self)
+      delivery = Event::Delivery.create_or_find_by!(event: self, subscriber: job_class_name)
+      delivery.deliver_later unless delivery.terminal?
     end
     update!(dispatched_at: Time.current)
   end
