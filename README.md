@@ -60,7 +60,7 @@ A fact anchored in a unique state record needs nothing. `Order#pay` creates the 
 A free-standing fact, published with no accompanying uniquely-constrained write, has no anchor. Webhook handlers reprocessing a provider callback, backfill scripts run twice, an import re-executed after a partial failure: these are the publishers that say things twice. They need to carry their identity explicitly:
 
 ```ruby
-order.publish_event("order.paid", idempotence_key: "kiwify/#{order_id}", ...)
+order.publish_event("order.paid", idempotence_key: "stripe/#{order_id}", ...)
 ```
 
 ### The mechanism: the consumers' grammar, one layer up
@@ -84,10 +84,10 @@ sequenceDiagram
   participant E as events
   participant S as Subscribers
 
-  P->>E: publish_event(key: "kiwify/123")
+  P->>E: publish_event(key: "stripe/123")
   E->>S: fanout, effects applied once
 
-  P->>E: publish_event(key: "kiwify/123") again
+  P->>E: publish_event(key: "stripe/123") again
   note over E: INSERT hits the unique partial index
   E-->>P: existing row returned, no new fanout
 
