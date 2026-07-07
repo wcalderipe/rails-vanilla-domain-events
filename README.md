@@ -144,4 +144,4 @@ Notes on the shape of the code:
 
 ## The next question: Did the thing actually happen?
 
-Everything above guarantees the announcement, not the reaction. Once every subscriber's `perform_later` has returned and `dispatched_at` is stamped, the event is outside the relay's view — whether the subscriber job then succeeds, fails, or is discarded is invisible to the outbox. Answering that question is the next chapter, on the branch `1-from-enqueued-to-done`.
+Everything above guarantees the announcement, not the reaction. Once every subscriber's `perform_later` has returned and `dispatched_at` is stamped, the event is outside the relay's view — whether the subscriber job then succeeds, fails, or is discarded is invisible to the outbox. Answering that question is the next chapter, on the branch [`1-from-enqueued-to-done`](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/1-from-enqueued-to-done).
