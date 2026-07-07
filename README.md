@@ -17,6 +17,13 @@ bin/rails test
 bin/demo        # the guided walkthrough: happy path, redelivery, crash gap, relay recovery
 ```
 
+## How to read this README
+
+Reliable eventing is a chain of questions, each one only askable once the previous is answered. This README is organized as that chain: **every section is a question the system must answer, followed by the design choices that answer it.** `main` answers the first question; each subsequent chapter lives on its own branch, takes the next question, and extends this same document.
+
+1. **Did we tell the queue?** — answered here, on `main`, by the transactional outbox.
+2. **Did the thing actually happen?** — the next question; see [the next question](#the-next-question-did-the-thing-actually-happen) below.
+
 ## The problem
 
 You committed a state change and need the rest of the system to react: send the confirmation, adjust inventory, sync a third party. The naive options all lose events:
@@ -27,22 +34,11 @@ You committed a state change and need the rest of the system to react: send the 
 
 The failure mode that matters is always the same dual write: the domain database commits, the queue never hears about it, and the missed side effect (an email never sent, access never granted) surfaces as a support ticket, not an error.
 
-## Features
+## Question 1: Did we tell the queue?
 
-| Feature | How it is solved | Where |
-|---|---|---|
-| Atomic fact recording | The event row is inserted inside the domain transaction; the fact commits with the state change or not at all | `Eventable#publish_event`, `app/models/concerns/eventable.rb` |
-| Lost fanout is detectable | Fanout stamps `dispatched_at` after enqueueing; a crash in between leaves it null instead of leaving silence | `Event#dispatch`, `app/models/event.rb` |
-| Lost fanout is recovered | A recurring relay re-dispatches undispatched events older than `RELAY_AFTER` (the Polling Publisher half of the outbox pattern) | `Event::RelayJob`, `config/recurring.yml` |
-| At-least-once delivery, made safe | The relay redoes the whole fanout, so consumers are idempotent by contract; both standard shapes are demonstrated | natural key: `Order::Confirmation` (unique on `order_id`); event-id dedup: `Inventory::Adjustment` (unique on `event_id`, stock derived by sum) |
-| Subscriber isolation | One job per subscriber: a failing consumer retries alone and never blocks the others | `Event#dispatch` fan-out; per-job `retry_on` |
-| Decoupled emitters and listeners | A registry maps action to subscribers; events without listeners are still recorded, history does not depend on who listens | `Event.subscribe`, `config/initializers/event_subscriptions.rb` |
-| Immutable history | The fact fields are `attr_readonly`; only the outbox bookkeeping (`dispatched_at`) stays writable | `app/models/event.rb` |
-| Audit trail for free | The events table is readable history, ordered by emission (enabled by the design; no feed UI in this demo) | `Event` + `payload` |
-| Replay and backfill | A new subscriber can be fed from the table by re-dispatching (enabled by the design; not wired in this demo) | re-dispatch over `Event` scopes |
-| Deterministic crash testing | An internal seam turns off dispatch-after-create to simulate the crash between commit and fanout | `Event.dispatch_after_create`, used by tests and `bin/demo` |
+The fact is committed. Between that commit and the moment every subscriber job sits safely in the queue, there is a window where the process can die — and with it, the announcement. This question is what the transactional outbox answers, and everything on `main` exists to answer it: the guarantee provided here is **at-least-once enqueue**.
 
-## The gap the outbox closes, precisely
+### The gap, precisely
 
 Recording the event and telling the world about it are two writes:
 
@@ -51,7 +47,7 @@ Recording the event and telling the world about it are two writes:
 
 `after_create_commit` alone cannot close that gap; it can only make it rare. Worse, without a marker the failure is invisible: the stranded row looks like every other row, so nothing alerts you that a reaction never ran.
 
-## How the outbox closes it
+### How the outbox closes it
 
 Two pieces on top of the plain Eventable pattern:
 
@@ -85,7 +81,7 @@ sequenceDiagram
   end
 ```
 
-## The consequence: at-least-once, so consumers are idempotent
+### The consequence: at-least-once, so consumers are idempotent
 
 The relay re-runs the whole fanout (there is no per-subscriber delivery state), so a subscriber can see the same event more than once. Every consumer here is idempotent, showing the two standard shapes:
 
@@ -94,30 +90,47 @@ The relay re-runs the whole fanout (there is no per-subscriber delivery state), 
 
 If subscribers multiply or need per-destination visibility, the next step is a delivery record per (event, subscriber): the `Webhook::Delivery` shape, which turns "redo the whole fanout" into "redo this delivery".
 
-## Where the queue lives, and why it matters
+### Where the queue lives, and why it matters
 
 This app uses Rails 8 defaults: Solid Queue in production with its own SQLite database (`queue` in `config/database.yml`), separate from the primary. Enqueue and domain commit therefore cannot share a transaction, which is exactly why the gap exists and the relay earns its place. Even an all-SQLite setup has the dual write.
 
-If you point Solid Queue at the same database as the domain, you can enqueue inside the transaction and get atomicity for free: the marker + relay become unnecessary. The pattern here is for every topology where that co-location is not true (separate queue DB, Redis-backed queues, a domain DB different from the queue DB) or not stable (you might split later).
+If you point Solid Queue at the same database as the domain, you can enqueue inside the transaction and get atomicity for free: the marker + relay become unnecessary. Note the enqueue point has to move too — dispatch currently fires from `after_create_commit`, which by definition runs after the transaction; co-locating the databases alone does not close the gap. The pattern here is for every topology where that co-location is not true (separate queue DB, Redis-backed queues, a domain DB different from the queue DB) or not stable (you might split later).
 
-## Vanilla Rails is plenty
+### Design choices
 
-The whole mechanism is 79 lines, every one of them stock Rails:
+| Choice | How it answers the question | Where |
+|---|---|---|
+| Atomic fact recording | The event row is inserted inside the domain transaction; the fact commits with the state change or not at all | `Eventable#publish_event`, `app/models/concerns/eventable.rb` |
+| Lost fanout is detectable | Fanout stamps `dispatched_at` after enqueueing; a crash in between leaves it null instead of leaving silence | `Event#dispatch`, `app/models/event.rb` |
+| Lost fanout is recovered | A recurring relay re-dispatches undispatched events older than `RELAY_AFTER` (the Polling Publisher half of the outbox pattern) | `Event::RelayJob`, `config/recurring.yml` |
+| At-least-once delivery, made safe | The relay redoes the whole fanout, so consumers are idempotent by contract; both standard shapes are demonstrated | natural key: `Order::Confirmation` (unique on `order_id`); event-id dedup: `Inventory::Adjustment` (unique on `event_id`, stock derived by sum) |
+| Subscriber isolation | One job per subscriber: a failing consumer never blocks the others | `Event#dispatch` fan-out |
+| Decoupled emitters and listeners | A registry maps action to subscribers; events without listeners are still recorded, history does not depend on who listens | `Event.subscribe`, `config/initializers/event_subscriptions.rb` |
+| Immutable history | The fact fields are `attr_readonly`; only the outbox bookkeeping (`dispatched_at`) stays writable | `app/models/event.rb` |
+| Audit trail for free | The events table is readable history, ordered by emission (enabled by the design; no feed UI in this demo) | `Event` + `payload` |
+| Replay and backfill | A new subscriber can be fed from the table by re-dispatching (enabled by the design; not wired in this demo) | re-dispatch over `Event` scopes |
+| Deterministic crash testing | An internal seam turns off dispatch-after-create to simulate the crash between commit and fanout | `Event.dispatch_after_create`, used by tests and `bin/demo` |
+
+Every choice is stock Rails — there is no library to learn and no broker to operate:
 
 | Guarantee | Stock Rails feature that provides it |
 |---|---|
 | Fact commits atomically with the state change | Active Record transactions (`events.create!` inside the caller's transaction) |
 | Fanout after the data is visible | `after_create_commit` |
-| Retries, backoff, failure visibility | Active Job + Solid Queue (`retry_on`, failed executions) |
+| Failure visibility | Active Job + Solid Queue (failed executions) |
 | The relay's schedule | Solid Queue recurring tasks (`config/recurring.yml`) |
 | Append-only facts | `attr_readonly` |
 | Consumer idempotency | unique indexes |
 
-There is no library to learn and no broker to operate. The trade is explicit: at-least-once delivery with idempotent consumers, instead of the exactly-once that no broker actually gives you anyway.
+The trade is explicit: at-least-once delivery with idempotent consumers, instead of the exactly-once that no broker actually gives you anyway.
 
-## Design notes
+Notes on the shape of the code:
 
 - `Event` is append-only on the domain side: `attr_readonly` on `eventable`, `action`, `payload`. `dispatched_at` is outbox bookkeeping, not part of the fact, so it stays writable.
 - The fact and the reaction are decoupled by the registry (`config/initializers/event_subscriptions.rb`): events without subscribers are still recorded; history does not depend on who listens.
 - `Event.dispatch_after_create` is an internal seam for tests and the demo: turning it off simulates the crash between commit and fanout deterministically.
 - The interface is small (`publish_event`, `Event.subscribe`; the relay is invisible to callers); the outbox mechanics hide behind it. Deleting the mechanism would push dispatch bookkeeping into every emitting model, which is the deletion-test argument for keeping it a deep module.
+
+## The next question: Did the thing actually happen?
+
+Everything above guarantees the announcement, not the reaction. Once every subscriber's `perform_later` has returned and `dispatched_at` is stamped, the event is outside the relay's view — whether the subscriber job then succeeds, fails, or is discarded is invisible to the outbox. Answering that question is the next chapter, on the branch `1-from-enqueued-to-done`.
