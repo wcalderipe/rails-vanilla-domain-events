@@ -44,7 +44,8 @@ class Event::DeliveryTest < ActiveSupport::TestCase
     assert_enqueued_with job: Order::ConfirmationJob, args: [ @delivery ] do
       Event::Delivery.redeliver_stale
     end
-    assert_equal 1, @delivery.reload.attempts
+    # Re-enqueue does not spend an attempt; the budget is for executions.
+    assert_equal 0, @delivery.reload.attempts
   end
 
   test "a fresh pending delivery is left alone" do

@@ -1,9 +1,15 @@
 class Event::Delivery < ApplicationRecord
   MAX_ATTEMPTS = 5
 
-  # A pending delivery untouched for this long has lost its job (crash after
-  # enqueue, exhausted retries, parked failed execution) and is redelivery-eligible.
-  REDELIVER_AFTER = 5.minutes
+  # A pending delivery quiet for this long is treated as lost — its job
+  # crashed, was parked, or exhausted its own Active Job retries — and is
+  # re-driven. The window sits ABOVE the subscribers' retry_on backoff window
+  # (chapter 2) on purpose: while a subscriber is still backing off, each
+  # execution refreshes updated_at (fulfill) and each re-enqueue touches it
+  # (deliver_later), so an actively-recovering delivery never looks stale. Tier
+  # 2 wakes only for deliveries that have gone genuinely quiet — a safety net,
+  # not a second retry loop competing with the first.
+  REDELIVER_AFTER = 15.minutes
 
   belongs_to :event
 
@@ -24,16 +30,32 @@ class Event::Delivery < ApplicationRecord
     end
   end
 
+  # Enqueue, then refresh the staleness clock — in that order, and note what is
+  # NOT here: attempts is not bumped. attempts counts executions, not enqueues
+  # (fulfill owns it), so a queue outage or an overlapping relay can re-enqueue
+  # freely without ever spending the retry budget against a delivery that has
+  # not run — the loss the old enqueue-counting accounting produced.
+  #
+  # The touch AFTER a successful enqueue is what keeps the relay's two tiers
+  # from re-driving the same delivery in one tick: tier 1 re-enqueues and
+  # touches, so tier 2 (which runs next) no longer sees it as stale. (increment!
+  # alone would not do this — by default it bumps the counter WITHOUT touching
+  # updated_at.) A failed enqueue skips the touch, so the next sweep retries it
+  # promptly instead of waiting out another window.
   def deliver_later
-    increment!(:attempts)
     subscriber.constantize.perform_later(self)
+    touch
   end
 
-  # The subscriber's effect and its acknowledgment commit atomically. A crash
-  # after the effect but before the ack causes a redelivery, which the
-  # terminal guard (or the consumer's own idempotency) absorbs.
+  # Runs when the job actually executes — the honest place to spend an attempt.
+  # increment! is OUTSIDE the effect's transaction so a rolled-back effect still
+  # counts (a subscriber that runs and fails burned an attempt); touch: true so
+  # every execution also refreshes updated_at, keeping a retrying delivery out
+  # of the stale window while its own retry_on is still working.
   def fulfill
     return if terminal?
+
+    increment!(:attempts, touch: true)
 
     transaction do
       yield event
@@ -41,8 +63,19 @@ class Event::Delivery < ApplicationRecord
     end
   end
 
+  # Terminal only if the effect has not already landed. The guarded re-check
+  # under a row lock stops a tier-2 exhaustion from stamping failed_at on a row
+  # that a subscriber job delivered concurrently — otherwise the delivery would
+  # carry both timestamps and page a human for work that in fact succeeded.
   def mark_failed(error:)
-    update!(failed_at: Time.current, error: error)
+    newly_failed = with_lock do
+      next false if terminal?
+      update!(failed_at: Time.current, error: error)
+      true
+    end
+
+    return unless newly_failed
+
     Rails.error.report(RuntimeError.new("event delivery failed: #{error}"),
                        context: { delivery_id: id, event_id: event_id, subscriber: subscriber })
   end

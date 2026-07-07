@@ -44,7 +44,7 @@ class EventTest < ActiveSupport::TestCase
     assert_equal %w[Inventory::AdjustmentJob Order::ConfirmationJob], event.deliveries.pluck(:subscriber).sort
     event.deliveries.each do |delivery|
       assert_enqueued_with job: delivery.subscriber.constantize, args: [ delivery ]
-      assert_equal 1, delivery.attempts
+      assert_equal 0, delivery.attempts # attempts counts executions, not this enqueue
     end
   end
 

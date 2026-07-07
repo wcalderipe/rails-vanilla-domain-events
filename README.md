@@ -92,17 +92,17 @@ sequenceDiagram
   participant R as RelayJob (tier 2)
 
   E->>D: create_or_find_by (event, subscriber)
-  E->>Q: enqueue job(delivery), attempts = 1
+  E->>Q: enqueue job(delivery), touch (no attempt spent)
   Q->>J: perform(delivery)
 
   alt effect lands
-    J->>D: fulfill: effect + delivered_at in one transaction
+    J->>D: fulfill: attempts + 1, then effect + delivered_at in one transaction
   else job crashes, exhausts retries, or parks
     note over D: delivery stays pending
     loop every minute
       R->>D: pending deliveries older than REDELIVER_AFTER
       alt attempts < MAX_ATTEMPTS
-        R->>Q: re-enqueue, attempts + 1
+        R->>Q: re-enqueue, touch (no attempt spent)
       else exhausted
         R->>D: failed_at + error (terminal)
         note over R: Rails.error.report pages a human
@@ -110,6 +110,19 @@ sequenceDiagram
     end
   end
 ```
+
+### The budget counts executions, not enqueues
+
+`attempts` is the retry budget, and `MAX_ATTEMPTS` turns it into a terminal `failed`. So the one thing it must count is real *executions*. The first cut of this chapter bumped it on every *enqueue* — and that quietly reintroduced the loss this whole repo is about. A queue outage or an overlapping relay re-enqueues a delivery that never runs; each re-enqueue spent an attempt; after five the relay marked a delivery permanently `failed` whose effect had not happened even once. The budget meant to bound retries was burning down against work that never got a turn.
+
+So the accounting moved to where the truth is. `fulfill` increments `attempts` when the job actually runs — outside the effect's transaction, so a subscriber that runs and *fails* still spends its attempt, but a job that never runs spends nothing. `deliver_later` only enqueues; it never touches the budget. A worker outage can now re-enqueue forever without falsely failing anything; the backlog shows up in `oldest_pending_age`, not in a pile of false terminals.
+
+Two smaller corrections travel with it:
+
+- **`deliver_later` touches `updated_at` after a successful enqueue.** Without it, tier 1 (which re-enqueues a stranded event's deliveries) and tier 2 (which re-drives stale deliveries) would both fire on the same delivery in one tick, because `increment!` on its own updates the counter *without* touching the timestamp. The touch refreshes the staleness clock, so once tier 1 has re-driven a delivery, tier 2 — running next in the same tick — no longer sees it as stale.
+- **`REDELIVER_AFTER` sits above the subscribers' `retry_on` backoff window** (15 minutes vs. a few). Tier 2 is a net for *lost* jobs, not a competitor to a subscriber that is still legitimately backing off: while `retry_on` is working, each execution refreshes `updated_at`, so the delivery never looks stale and the two mechanisms stay out of each other's way.
+
+And the terminal transition is guarded: `mark_failed` re-checks under a row lock and refuses to stamp `failed_at` on a delivery a subscriber just delivered concurrently — otherwise a tier-2 exhaustion racing a successful effect would leave a row carrying both timestamps, paging a human for work that landed. Pinned in `test/models/event/delivery_accounting_test.rb` and `test/jobs/relay_tiers_test.rb`.
 
 ### What the guarantee is now
 
