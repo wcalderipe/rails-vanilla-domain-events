@@ -68,12 +68,22 @@ class Event::Delivery < ApplicationRecord
     touch
   end
 
-  # Runs when the job actually executes — the honest place to spend an
-  # attempt. increment! happens outside the effect's transaction so a
-  # rolled-back effect still counts (a subscriber that ran and failed burned
-  # an attempt); touch: true so every execution also refreshes updated_at,
-  # keeping a retrying delivery out of the stale window while its own
-  # retry_on is still working.
+  # Runs when the job actually executes — the honest place to spend an attempt.
+  # increment! is OUTSIDE the effect's transaction so a rolled-back effect still
+  # counts (a subscriber that runs and fails burned an attempt); touch: true so
+  # every execution also refreshes updated_at, keeping a retrying delivery out
+  # of the stale window while its own retry_on is still working.
+  #
+  # The effect and its acknowledgment commit atomically. A crash after the
+  # effect but before the ack causes a redelivery, which the terminal guard (or
+  # the consumer's own idempotency) absorbs.
+  #
+  # A contract violation is the one error that must NOT ride the retry and
+  # redelivery machinery: a malformed payload never gets better. The raise
+  # crosses the transaction boundary, rolling back any partial effect; the
+  # failed stamp then persists in its own transaction. First execution,
+  # terminal, reported. Every other error propagates and stays pending for
+  # tier 2, because an unexpected error might still be a blink.
   def fulfill
     return if terminal?
 
@@ -83,6 +93,8 @@ class Event::Delivery < ApplicationRecord
       yield event
       update!(delivered_at: Time.current)
     end
+  rescue Event::ContractViolation => violation
+    mark_failed(error: violation.message)
   end
 
   # Terminal only if the effect hasn't already landed. The guarded re-check
