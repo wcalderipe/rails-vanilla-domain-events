@@ -98,6 +98,14 @@ sequenceDiagram
 
 One honesty note for later: rescuing `RecordNotUnique` inside the caller's open transaction is fine on SQLite, where a failed statement does not poison the transaction. On PostgreSQL it does, and this rescue needs a savepoint around the insert. The consumers carry the same caveat; both belong to question 9.
 
+### Why the key has no default
+
+A default would have to be derived, and both derivations fail against this repo's own domain. Keying by the record alone gives `order.placed`, `order.paid`, and `order.shipped` the same key: two of the three facts silently vanish. Keying by record plus action survives the Order lifecycle, but only because those facts are anchored in unique state records and were already safe without a key; the same default silently drops the second occurrence of any legitimately repeatable fact (a `user.name.updated` that happens twice is two real facts).
+
+The two failure costs are not symmetric. A missing key produces a duplicate effect: visible, and absorbed by idempotent consumers. A wrong default produces a fact that was never recorded: invisible and unrecoverable, in a log whose whole promise is that committed facts exist. Between duplicating and losing silently, every layer of this repo chooses duplicating; publication is no place to break the pattern.
+
+Publication identity is domain knowledge, the same reason each consumer picks its own dedup key. Anchored facts need no key. Free-standing facts with a natural identity pass one. Repeatable facts must not have one. A default would erase the third category.
+
 ### The limit: same fact once, but in what order?
 
 The key gives a fact identity, so saying it twice collapses into saying it once. It says nothing about when a fact lands relative to its neighbors: consumers can still observe `order.shipped` before `order.paid` under retries and redeliveries. Ordering is the next question: **In what order do facts arrive?**
