@@ -21,7 +21,7 @@ bin/demo        # the guided walkthrough from chapter 1, still green
 
 ## How to read this repo
 
-Reliable eventing is a chain of questions, each one only askable once the previous is answered. This repo is organized as that chain: `main` states the problem and holds the naive starting point (`Rails.event.notify`, a log line and nothing more); each chapter lives on its own branch, takes the next question, changes the code to answer it, and extends this same document. This branch is chapter 6.
+Reliable eventing is a chain of questions, each one only askable once the previous is answered. This repo is organized as that chain: `main` states the problem and holds the naive starting point (`Rails.event.notify`, a log line and nothing more); each chapter lives on its own branch, takes the next question, changes the code to answer it, and extends this same document. This branch is chapter 7.
 
 Earlier chapters are not repeated here; each link below goes to that chapter's README.
 
@@ -30,68 +30,69 @@ Earlier chapters are not repeated here; each link below goes to that chapter's R
 3. [Which subscriber is actually done?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/3-which-subscriber-is-actually-done)
 4. [Who guards the guard?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/4-who-guards-the-guard)
 5. [Did we say it twice?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/5-did-we-say-it-twice)
-6. **In what order do facts arrive? (📍 you're here)**
-7. [What exactly did we say?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/7-what-exactly-did-we-say)
+6. [In what order do facts arrive?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/6-in-what-order-do-facts-arrive)
+7. **What exactly did we say? (📍 you're here)**
 8. [How long do we remember?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/8-how-long-do-we-remember)
 9. [What breaks when we leave SQLite?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/9-what-breaks-when-we-leave-sqlite)
 
-## Question 6: In what order do facts arrive?
+## Question 7: What exactly did we say?
 
-The honest guarantee, stated plainly: this system is **unordered at-least-once**. Chapter 5 gave each fact an identity, so saying it twice collapses into once. Nothing anywhere promises that facts take effect in the order they happened, and this chapter's answer is not to add that promise. It is to show that emission order and processing order are different things, that the consumers already in this repo never needed the promise, and that naming the posture behind that fact is enough.
+Every chapter so far moves facts around without reading them. The consumers do read them: `Inventory::Adjustment.apply` reaches into `event.payload` for `"item"` and `"quantity"` and trusts both to exist and to make sense. Nobody promised that. The payload is a contract with no owner, and the machinery built in chapters 2 and 3 makes breaking it expensive in a specific, measurable way.
 
-This chapter adds no application code. The tests and this document are the whole change.
+### The burn
 
-### Emission order and processing order are different facts
+Publish an `order.paid` whose payload is missing `quantity` and watch the layers do exactly what they were built to do. The consumer raises `KeyError`. The error is not declared transient, so the job parks. The delivery stays pending, so tier 2 redelivers after `REDELIVER_AFTER`. The payload is still malformed, so it parks again. Only after `MAX_ATTEMPTS` redeliveries does the delivery land in `failed` and page a human: the whole redelivery budget spent retrying something that could never succeed. The first commit on this branch is a test pinning that waste (`d487f30`); the fix flips it.
 
-Emission order is recorded. Events are rows, and `Event.chronologically` (`app/models/event.rb`) is the log in the order the facts happened. Whatever scrambling happens downstream, the log still knows the truth; a test pins exactly that.
-
-Processing order is not guaranteed, for three causes that already live in this repo:
-
-- Parallel workers: `config/queue.yml` runs three worker threads; two effects execute concurrently and finish in either order.
-- Retry backoff (chapter 2): a failed effect re-enqueues behind jobs that were emitted after it.
-- Tier-2 redelivery (chapter 3): a delivery redriven minutes later lands long after its neighbors.
-
-So `order.shipped`'s effect can land before `order.paid`'s even though it was emitted after. No engine setting changes this; it is the nature of effects running as independent jobs.
+A contract violation is not a blink. Chapter 2 sorted errors into transient (retry) and unexpected (park, visible); this chapter adds the third kind: never retryable, and the sooner it fails terminally, the sooner someone fixes the emitter.
 
 ```mermaid
 sequenceDiagram
-  participant O as Order
-  participant L as Event log
-  participant Q as Solid Queue
-  participant C as Consumers
+  participant J as Subscriber job
+  participant D as Delivery
+  participant R as RelayJob (tier 2)
 
-  O->>L: order.paid (emitted first)
-  O->>L: order.shipped (emitted second)
-  L->>Q: fanout, one job per delivery
+  rect rgb(255, 235, 235)
+    note over J,R: before: the burn
+    J->>D: fulfill raises KeyError
+    loop MAX_ATTEMPTS times
+      R->>J: redeliver after REDELIVER_AFTER
+      J->>D: raises again, still pending
+    end
+    R->>D: failed_at (budget exhausted, human paged late)
+  end
 
-  note over Q: retries and redeliveries reorder execution
-  Q->>C: shipped effect lands first
-  Q->>C: paid effect lands second
-
-  note over L: the log still reads paid, then shipped
-  note over C: whether that matters is the consumer's posture
+  rect rgb(235, 245, 235)
+    note over J,D: after: first execution is terminal
+    J->>D: fulfill rescues ContractViolation
+    D->>D: failed_at + error message, effect rolled back
+    note over D: Rails.error.report pages a human now
+  end
 ```
 
-### The three consumer postures
+### Who owns what
 
-The tests (`test/models/event_ordering_test.rb`) apply effects in the opposite of emission order and let each posture speak:
+The rules are documentation plus one error class, not machinery:
 
-1. One-shot by natural key. `Order::Confirmation` records once per order, whenever its event lands. Order is irrelevant by construction.
-2. Commutative and derived. `Inventory.on_hand` is a sum over adjustments, so any permutation of arrivals converges to the same stock. Chapter 1's rule, stock is derived and never counter-updated, was quietly answering this question all along.
-3. Precondition-gated via retry. A consumer that genuinely needs an earlier fact checks the precondition and raises when it is missing. Chapter 2's `retry_on` becomes the reordering mechanism: the effect re-enqueues behind the fact it was waiting for and converges on the next attempt. Ordering by backoff, with zero new machinery.
+- The emitter owns the schema. What `order.paid` says is `Order#pay`'s decision, and the schema's source of truth is the emitter's own tests: `test/models/order/contract_test.rb` pins each action's payload shape, so renaming or removing a key breaks the build on the emitter's side instead of production on the consumer's side.
+- The consumer owns its requirements. `Inventory::Adjustment` declares what it needs at the fetch site: `required(event, "item")`, a quantity that is a positive integer. A missing or malformed value raises `Event::ContractViolation` with a message that names the action and the key.
+- Consumers are tolerant readers. Unknown keys never break anyone (pinned by test), which is what makes evolution additive: add keys freely; to rename or remove one, migrate the consumers first and let the emitter's contract test force the conversation.
 
-The documentation test shows the fourth shape, the one to avoid: a last-write-wins projection that trusts arrival order records `paid` as the final status of an order that shipped. The test asserts the wrong state on purpose and stays green as a warning: protection is consumer posture, not the mechanism. If a projection must reflect the latest fact, it has the log's emission order to compare against instead of trusting arrival.
+### The mechanism: one rescue in fulfill
 
-### What SQLite is quietly protecting
+`Event::Delivery#fulfill` treats the violation as the terminal state it is:
 
-Emission order deserves one honest footnote. It is total and gapless today because SQLite allows one writer at a time, in any journal mode. WAL changes reader concurrency, not writer concurrency: the write lock is held to commit, across every process touching the file. One write transaction at a time means row ids follow commit order and an id never becomes visible while a smaller one is still uncommitted.
+```ruby
+rescue Event::ContractViolation => violation
+  mark_failed(error: violation.message)
+end
+```
 
-That protection lives in the domain database, not in Solid Queue. Moving the queue to another store changes nothing here; moving the domain database to Postgres removes it entirely, because concurrent writers interleave commits and leave id gaps. The typical migration moves both to the same Postgres in one step, so the protection tends to disappear exactly when everything else changes too. That cliff belongs to question 9. This chapter's subject, processing order, was never protected by any engine.
+First execution, delivery `failed`, `Rails.error.report` fires through the existing `mark_failed` path, zero redeliveries spent. One subtlety is load-bearing: the raise crosses the effect transaction's boundary, so any partial write the consumer made rolls back, and the failed stamp then commits in its own transaction. The tests pin both halves (rolled-back effect, persisted stamp), plus the healthy sibling subscriber delivering untouched, and the contrast case: an unexpected `RuntimeError` still propagates and stays pending, because an unexpected error might genuinely be a blink and tier 2 exists for exactly that.
 
-### Out of scope, on purpose
+### Why no schema gem
 
-No sequence numbers, no per-stream position column, no advisory locks, no consumer cursors. Guaranteed per-aggregate ordering is a per-stream serialization problem, and on SQLite the single writer already serializes appends, so the machinery would be redundant the day it was written and would need a redesign the day the database moves. Question 9 owns that design. Until a consumer exists that cannot be written in one of the three postures, ordering machinery is speculation.
+A JSON Schema (or a registry table) would declare the same requirements in a second language, add a dependency, and still need the consumer to decide what happens on violation, which is the only part that was ever hard. Explicit fetches say what is required, the error class says what happens when it is not, and the emitter's tests say what is sent. Every piece is plain Ruby a reader already knows how to inspect.
 
-### The limit: the shape of what was said
+### The limit: how long do we remember?
 
-Consumers now tolerate when facts arrive. What they cannot yet trust is what the facts say: every consumer reaches into `event.payload` for keys and types nobody promised. The payload is an implicit contract with no owner, and that is the next question: **What exactly did we say?**
+Facts now have identity, order posture, and a contract. They also accumulate forever: every event, every delivery, every effect row, growing without bound, and the jobs in flight hold references into those tables. Deciding how long the log lives, and what pruning it can break, is the next question: **How long do we remember?**
