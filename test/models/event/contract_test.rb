@@ -20,7 +20,7 @@ class Event::ContractTest < ActiveSupport::TestCase
 
     assert delivery.reload.failed?
     assert_equal "order.paid payload is missing quantity", delivery.error
-    assert_equal 0, delivery.attempts
+    assert_equal 1, delivery.attempts # one execution happened; it failed terminally (N2)
   end
 
   test "a non-integer quantity fails the delivery on the first execution" do
@@ -53,7 +53,10 @@ class Event::ContractTest < ActiveSupport::TestCase
     assert_no_enqueued_jobs do
       Event::Delivery.redeliver_stale
     end
-    assert_equal 0, delivery.reload.attempts
+    # Terminal after one execution: redelivery never touches it, and it never
+    # climbs toward MAX_ATTEMPTS the way a transient failure would.
+    assert delivery.reload.failed?
+    assert_equal 1, delivery.attempts
   end
 
   test "a violation in one subscriber does not touch the healthy sibling" do
