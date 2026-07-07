@@ -25,15 +25,15 @@ Reliable eventing is a chain of questions, each one only askable once the previo
 
 A question links to the branch that works on it; a question without a link has no chapter yet.
 
-1. Did we tell the queue? (this branch)
-2. [Did the thing actually happen?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/2-did-the-thing-actually-happen) Retries, discards, and exhaustion as a state.
-3. [Which subscriber is actually done?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/3-which-subscriber-is-actually-done) A delivery record per (event, subscriber); at-least-once effect.
-4. Who guards the guard?
-5. Did we say it twice?
-6. In what order do facts arrive?
-7. What exactly did we say?
-8. How long do we remember?
-9. What breaks when we leave SQLite?
+1. **Did we tell the queue? (📍 you're here)**
+2. [Did the thing actually happen?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/2-did-the-thing-actually-happen)
+3. [Which subscriber is actually done?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/3-which-subscriber-is-actually-done)
+4. [Who guards the guard?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/4-who-guards-the-guard)
+5. [Did we say it twice?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/5-did-we-say-it-twice)
+6. [In what order do facts arrive?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/6-in-what-order-do-facts-arrive)
+7. [What exactly did we say?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/7-what-exactly-did-we-say)
+8. [How long do we remember?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/8-how-long-do-we-remember)
+9. [What breaks when we leave SQLite?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/9-what-breaks-when-we-leave-sqlite)
 
 ## The problem
 
