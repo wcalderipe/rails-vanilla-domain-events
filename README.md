@@ -58,7 +58,7 @@ A rule this repo takes a position on: the transient list belongs to each subscri
 
 ### The rule, made real: the confirmation owns its transient
 
-A rule with no subscriber that exercises it is decoration. `Order::ConfirmationJob` is the one with an external dependency that actually blinks: it delivers a confirmation email, and a mail server can be briefly busy or slow. So it — not the base class — declares that transient:
+A rule with no subscriber that exercises it is decoration. `Order::ConfirmationJob` is the one with an external dependency that actually blinks: it delivers a confirmation email, and a mail server can be briefly busy or slow. So it, not the base class, declares that transient:
 
 ```ruby
 class Order::ConfirmationJob < ApplicationJob
@@ -67,9 +67,9 @@ class Order::ConfirmationJob < ApplicationJob
 end
 ```
 
-`Inventory::AdjustmentJob` declares nothing beyond the base: its only dependency is the local database, whose one transient (deadlock) is already covered for everyone. That asymmetry *is* the rule — the transient list is a property of the dependency, so a subscriber that touches nothing flaky has an empty one.
+`Inventory::AdjustmentJob` declares nothing beyond the base: its only dependency is the local database, whose one transient (deadlock) is already covered for everyone. That asymmetry *is* the rule: the transient list is a property of the dependency, so a subscriber that touches nothing flaky has an empty one.
 
-Sending mail forces a decision the pure-database effects never did: the send is external IO with no transaction and no natural idempotency. `Order::Confirmation.record` handles it by making the record and the send one unit — the email goes out only on the first successful `create!`, so a relay redelivery of the same event never re-mails, and a transient mail failure rolls the row back with it so `retry_on` re-runs the whole unit cleanly. The honest cost, spelled out in the code comment: the email is **at-least-once, not exactly-once** (a commit failure right after a successful send re-mails on retry), and `deliver_now` holds a DB transaction open across the send. That is the boundary where a production system would give the email its own outbox; here it is the smallest change that makes the chapter's rule true against a real subscriber. Driven end to end — real job, a mail server that fails twice then delivers — in `test/jobs/confirmation_delivery_retry_test.rb`.
+Sending mail forces a decision the pure-database effects never did: the send is external IO with no transaction and no natural idempotency. `Order::Confirmation.record` handles it by making the record and the send one unit. The email goes out only on the first successful `create!`, so a relay redelivery of the same event never re-mails, and a transient mail failure rolls the row back with it so `retry_on` re-runs the whole unit cleanly. The honest cost, spelled out in the code comment: the email is **at-least-once, not exactly-once** (a commit failure right after a successful send re-mails on retry), and `deliver_now` holds a DB transaction open across the send. That is the boundary where a production system would give the email its own outbox; here it is the smallest change that makes the chapter's rule true against a real subscriber. Driven end to end (real job, a mail server that fails twice then delivers) in `test/jobs/confirmation_delivery_retry_test.rb`.
 
 ### Exhaustion is a state, not an exception
 
