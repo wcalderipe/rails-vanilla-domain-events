@@ -1,5 +1,5 @@
 # Read model over adjustments: stock is derived from the applied events, so
-# replays (which dedupe by event) can never double-count.
+# replays (deduped by event) can never double-count.
 module Inventory
   STARTING_STOCK = 100
 

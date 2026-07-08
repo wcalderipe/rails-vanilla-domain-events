@@ -1,6 +1,6 @@
-# The customer-notification effect of order.paid. Idempotent by natural key:
-# the unique index on order_id makes a replayed event a no-op, so at-least-once
-# delivery confirms exactly once.
+# The customer-notification effect of order.paid. Idempotent by natural
+# key: the unique index on order_id makes a replayed event a no-op, so
+# at-least-once delivery confirms exactly once.
 class Order::Confirmation < ApplicationRecord
   belongs_to :order, touch: true
 
