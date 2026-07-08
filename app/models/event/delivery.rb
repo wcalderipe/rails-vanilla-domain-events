@@ -1,14 +1,14 @@
 class Event::Delivery < ApplicationRecord
   MAX_ATTEMPTS = 5
 
-  # A pending delivery quiet this long is treated as lost — its job crashed,
-  # got parked, or exhausted its own Active Job retries — and gets re-driven.
-  # This window sits above the subscribers' retry_on backoff window (chapter
-  # 2) on purpose: while a subscriber is still backing off, each execution
-  # refreshes updated_at (fulfill) and each re-enqueue touches it
-  # (deliver_later), so an actively-recovering delivery never looks stale.
-  # Pass 2 only wakes for deliveries that have gone genuinely quiet — a
-  # safety net, not a second retry loop competing with the first.
+  # A pending delivery quiet this long is treated as lost (job crashed, got
+  # parked, or exhausted its own Active Job retries) and gets re-driven. The
+  # window sits above the subscribers' retry_on backoff window (chapter 2) on
+  # purpose: while a subscriber is still backing off, each execution touches
+  # updated_at (fulfill) and each re-enqueue touches it too (deliver_later),
+  # so an actively-recovering delivery never looks stale. This second
+  # recovery pass (redeliver_stale) only wakes for deliveries gone genuinely
+  # quiet — a safety net, not a second retry loop competing with the first.
   REDELIVER_AFTER = 15.minutes
 
   belongs_to :event
@@ -16,18 +16,17 @@ class Event::Delivery < ApplicationRecord
   scope :pending, -> { where(delivered_at: nil, failed_at: nil) }
   scope :stale, -> { pending.where(updated_at: ..REDELIVER_AFTER.ago) }
 
-  # Pass 2 of the relay (see Event::RelayJob): re-drives deliveries whose
-  # effect never landed. Exhausting MAX_ATTEMPTS is a terminal transition,
-  # not another loop: the delivery fails and the failure is reported, so a
-  # permanently broken subscriber pages a human instead of retrying forever.
-  # Rescued per item, so one bad delivery can't abort the sweep for
-  # everything behind it. Returns [redelivered, failed] counts for the
-  # relay's liveness signal.
+  # The relay's second recovery pass: re-drives deliveries whose effect never
+  # landed. Exhausting MAX_ATTEMPTS is a terminal transition, not another
+  # loop — the delivery fails and gets reported, so a permanently broken
+  # subscriber pages a human instead of retrying forever. Rescued per item so
+  # one poison delivery can't abort the sweep for the rest. Returns
+  # [redelivered, failed] counts as the relay's liveness signal.
   def self.redeliver_stale
     redelivered = failed = 0
 
-    # Bounded and oldest-first, same as pass 1 (Event::RELAY_BATCH): a tick
-    # must stay short enough not to outrun the relay's concurrency lease.
+    # Bounded and oldest-first, same as the first pass (Event::RELAY_BATCH):
+    # a tick must stay short enough not to outrun the relay's concurrency lease.
     stale.order(:updated_at).limit(Event::RELAY_BATCH).each do |delivery|
       if delivery.attempts >= MAX_ATTEMPTS
         delivery.mark_failed(error: "redelivery attempts exhausted")
@@ -43,37 +42,50 @@ class Event::Delivery < ApplicationRecord
     [ redelivered, failed ]
   end
 
-  # Age of the oldest delivery still waiting for its effect, in seconds; nil
-  # if nothing is pending. This is the relay's health reading: if it grows
-  # past the sweep interval, the guard is asleep.
+  # Age of the oldest pending delivery, in seconds; nil when nothing is
+  # pending. The relay's health signal — if this grows past the sweep
+  # interval, the guard is asleep.
   def self.oldest_pending_age
     oldest = pending.minimum(:updated_at)
     oldest && Time.current - oldest
   end
 
-  # Enqueue, then refresh the staleness clock — in that order. Note what's
-  # NOT here: attempts isn't bumped. attempts counts executions, not
-  # enqueues (fulfill owns that), so a queue outage or an overlapping relay
-  # can re-enqueue freely without spending the retry budget on a delivery
-  # that hasn't even run — the bug the old enqueue-counting approach had.
+  # Enqueues, then refreshes the staleness clock, in that order. Note what's
+  # NOT here: attempts isn't bumped. attempts counts executions, not enqueues
+  # (fulfill owns that), so a queue outage or an overlapping relay can
+  # re-enqueue freely without spending the retry budget on a delivery that
+  # hasn't even run.
   #
-  # Touching updated_at only after a successful enqueue is what keeps the
-  # relay's two passes from re-driving the same delivery in one tick: pass 1
-  # re-enqueues and touches, so pass 2 (which runs next) no longer sees it as
-  # stale. (increment! alone wouldn't do this — by default it bumps the
-  # counter without touching updated_at.) A failed enqueue skips the touch,
-  # so the next sweep retries it promptly instead of waiting out another window.
+  # Touching after a successful enqueue is what keeps the relay's two passes
+  # from re-driving the same delivery in one tick: the first pass re-enqueues
+  # and touches, so the second pass (redeliver_stale, which runs next) no
+  # longer sees it as stale. (increment! alone wouldn't do this — by default
+  # it bumps the counter without touching updated_at.) A failed enqueue skips
+  # the touch, so the next sweep retries it promptly instead of waiting out
+  # another window.
   def deliver_later
     subscriber.constantize.perform_later(self)
     touch
   end
 
-  # Runs when the job actually executes — the honest place to spend an
-  # attempt. increment! happens outside the effect's transaction so a
-  # rolled-back effect still counts (a subscriber that ran and failed burned
-  # an attempt); touch: true so every execution also refreshes updated_at,
+  # Runs when the job actually executes — the right place to spend an
+  # attempt. increment! is outside the effect's transaction so a
+  # rolled-back effect still counts (a subscriber that runs and fails burned
+  # an attempt); touch: true refreshes updated_at on every execution,
   # keeping a retrying delivery out of the stale window while its own
   # retry_on is still working.
+  #
+  # The effect and its acknowledgment commit atomically. A crash after the
+  # effect but before the ack causes a redelivery, which the terminal guard
+  # (or the consumer's own idempotency) absorbs.
+  #
+  # A contract violation is the one error that must not ride the retry and
+  # redelivery machinery — a malformed payload never gets better. The raise
+  # crosses the transaction boundary, rolling back any partial effect, then
+  # the failed stamp persists in its own transaction: first execution,
+  # terminal, reported. Every other error propagates and stays pending for
+  # the second recovery pass, since an unexpected error might still be a
+  # blip.
   def fulfill
     return if terminal?
 
@@ -83,12 +95,14 @@ class Event::Delivery < ApplicationRecord
       yield event
       update!(delivered_at: Time.current)
     end
+  rescue Event::ContractViolation => violation
+    mark_failed(error: violation.message)
   end
 
-  # Terminal only if the effect hasn't already landed. The guarded re-check
-  # under a row lock stops a pass-2 exhaustion from stamping failed_at on a
-  # row that a subscriber job delivered concurrently — otherwise the
-  # delivery would carry both timestamps and page a human for work that
+  # Marks failed only if the effect hasn't already landed. The guarded
+  # re-check under a row lock stops a second-pass exhaustion from stamping
+  # failed_at on a row a subscriber job delivered concurrently — otherwise
+  # the delivery would carry both timestamps and page a human for work that
   # actually succeeded.
   def mark_failed(error:)
     newly_failed = with_lock do
