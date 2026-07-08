@@ -1,9 +1,9 @@
-# The inventory effect of order.paid. Idempotent by event id: the unique
+# The inventory effect of order.paid. Idempotent by event id — the unique
 # index on event_id means the same event applies at most one adjustment, no
 # matter how many times the relay re-delivers it.
 #
-# This consumer's required keys are declared here, at the fetch site: the
-# emitter owns the payload schema, the consumer owns what it requires of it.
+# Required keys are declared here, at the fetch site: the emitter owns the
+# payload schema, the consumer owns what it requires from it.
 class Inventory::Adjustment < ApplicationRecord
   self.table_name = "inventory_adjustments"
 
