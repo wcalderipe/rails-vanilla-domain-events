@@ -1,7 +1,7 @@
 require "test_helper"
 require "net/smtp"
 
-# N3: the confirmation subscriber's real dependency — the mail server — can
+# The confirmation subscriber's real dependency — the mail server — can
 # blink. Chapter 2's thesis is that a subscriber declares its own transient
 # errors in retry_on; this exercises that thesis against the REAL
 # Order::ConfirmationJob, not a synthetic stand-in.
