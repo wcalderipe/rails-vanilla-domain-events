@@ -1,7 +1,7 @@
 class OrderMailer < ApplicationMailer
-  # The customer-facing side of a confirmed order. Delivering mail is external
-  # IO: it can time out or hit a briefly-busy server. That transient is what
-  # Order::ConfirmationJob declares in retry_on (chapter 2).
+  # Sends the customer-facing confirmation email. Delivering mail is external
+  # IO, so it can time out or hit a briefly busy server — that's the
+  # transient error Order::ConfirmationJob handles with retry_on.
   def confirmation(order)
     mail(
       to: order.customer_email,

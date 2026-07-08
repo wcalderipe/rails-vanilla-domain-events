@@ -1,22 +1,22 @@
-# The customer-notification effect of order.paid. Idempotent by natural
-# key: the unique index on order_id makes a replayed event a no-op, so
-# at-least-once delivery confirms exactly once.
+# Handles the customer-notification effect of order.paid. Idempotent by
+# natural key: the unique index on order_id makes a replayed event a no-op,
+# so at-least-once delivery still confirms exactly once.
 class Order::Confirmation < ApplicationRecord
   belongs_to :order, touch: true
 
-  # Recording the confirmation and sending the email are one unit: the email
-  # goes out only on the FIRST successful create, so a redelivery (the relay
-  # re-driving the same event) never re-mails. The insert and the send share a
-  # transaction, so a transient mail failure rolls the row back with it — the
-  # order is not "confirmed" until the mail actually left, and the job's
-  # retry_on re-runs the whole unit cleanly.
+  # Recording the confirmation and sending the email happen as one unit: the
+  # email only goes out on the first successful create, so a redelivery
+  # (the relay re-sending the same event) never re-mails. The insert and the
+  # send share a transaction, so if mail delivery fails transiently, the row
+  # rolls back with it — the order isn't "confirmed" until the mail actually
+  # went out, and the job's retry_on cleanly re-runs the whole thing.
   #
-  # The tradeoff, stated plainly: the email is at-least-once, not exactly-once.
-  # If deliver_now succeeds but the commit right after it fails, the retry
-  # re-sends. And deliver_now is IO held open inside a DB transaction, so a slow
-  # mail server holds the row's write locks; acceptable at this domain's scale,
-  # and the honest boundary where a real system would move the send behind its
-  # own outbox.
+  # The tradeoff, stated plainly: the email is at-least-once, not
+  # exactly-once. If deliver_now succeeds but the commit right after it
+  # fails, the retry re-sends. Also, deliver_now holds IO open inside a DB
+  # transaction, so a slow mail server holds the row's write locks. That's
+  # acceptable at this domain's scale, but the honest fix in a real system
+  # would be to move the send behind its own outbox.
   def self.record(event)
     order = event.eventable
 
