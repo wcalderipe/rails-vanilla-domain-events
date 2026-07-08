@@ -1,6 +1,6 @@
 require "test_helper"
 
-# N4: the relay runs tier 1 (re-dispatch stranded events) then tier 2
+# The relay runs tier 1 (re-dispatch stranded events) then tier 2
 # (redeliver stale deliveries) in one tick. A crash mid-fanout leaves an event
 # stranded WITH a pending delivery, so both tiers can see the same delivery.
 # It must be re-driven once per tick, not twice.

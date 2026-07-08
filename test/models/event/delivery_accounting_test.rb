@@ -1,6 +1,6 @@
 require "test_helper"
 
-# N2: `attempts` is the delivery's retry budget, and MAX_ATTEMPTS turns it into
+# `attempts` is the delivery's retry budget, and MAX_ATTEMPTS turns it into
 # a terminal failure. It must therefore count real EXECUTIONS, not enqueues —
 # otherwise a queue outage or an overlapping relay spends the budget against a
 # delivery that never ran, and a live effect is marked permanently failed.
