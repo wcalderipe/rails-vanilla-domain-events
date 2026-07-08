@@ -1,43 +1,46 @@
 class Event < ApplicationRecord
-  # An undispatched event older than this has clearly lost its post-commit
-  # fanout (crashed process, lost enqueue) and is eligible for relay.
+  # An event still undispatched after this long has lost its post-commit
+  # fanout (crashed process, lost enqueue) and is eligible for the relay
+  # to retry.
   RELAY_AFTER = 1.minute
 
-  # Most events a single relay tick will touch, across both sweeps. This
-  # caps how long a tick can run, which matters for the semaphore in
-  # Event::RelayJob: that guard is a fixed-TTL lease, not a lifetime lock,
-  # so a tick that ran longer than the lease would lose exclusivity and
-  # overlap the next tick. A large backlog just drains over several short
-  # ticks; anything left over is picked up on the next one (the
-  # stranded/stale scopes simply re-select it).
+  # Max events one relay tick processes, across both recovery passes. This
+  # bounds tick duration, which matters because Event::RelayJob's lock is a
+  # fixed-TTL lease, not a permanent hold — a tick that ran longer than the
+  # lease could lose exclusivity and overlap the next tick. A large backlog
+  # just drains over several ticks; whatever's left gets picked up next time,
+  # since the stranded/stale scopes re-select it.
   RELAY_BATCH = 500
 
-  # How long the log remembers. The window is a business decision (audit
-  # needs, privacy: payloads carry PII); the mechanism only enforces it.
+  # How long events are kept. The window itself is a business decision
+  # (audit needs vs. privacy, since payloads carry PII) — this constant
+  # just enforces it.
   RETENTION = 90.days
 
   belongs_to :eventable, polymorphic: true
   has_many :deliveries, class_name: "Event::Delivery", dependent: :destroy
 
-  # Append-only on the domain side: the fact itself never changes.
-  # dispatched_at is outbox bookkeeping, not part of the fact, so it stays
-  # writable.
+  # The domain fact is append-only and never changes. dispatched_at is
+  # outbox bookkeeping, not part of the fact, so it's left writable.
   attr_readonly :eventable_id, :eventable_type, :action, :payload, :idempotence_key
 
-  # Test/demo seam: turning this off simulates a crash between the commit
-  # and the fanout.
+  # Test/demo seam — turning this off simulates a crash between the
+  # commit and the fanout.
   class_attribute :dispatch_after_create, default: true
 
   scope :chronologically, -> { order(:created_at, :id) }
   scope :dispatched, -> { where.not(dispatched_at: nil) }
   scope :stranded, -> { where(dispatched_at: nil).where(created_at: ..RELAY_AFTER.ago) }
 
-  # Prunable = old enough AND owing nothing: dispatched (an undispatched
-  # event still owes its whole fanout, however old) with no pending delivery
-  # (a pending delivery is work the relay may still re-drive; deleting the
-  # event would strand its job into chapter 2's discard_on, the silent drop
-  # the prune test documents). Terminal deliveries and zero-subscriber
-  # events are memory, not work, so age alone decides.
+  # Prunable means old enough and owing nothing:
+  #   - dispatched — an undispatched event still owes its whole fanout,
+  #     no matter how old
+  #   - no pending delivery — a pending delivery is work the relay might
+  #     still retry; deleting the event would strand that job into its
+  #     discard_on handler, which silently drops it (as the prune test
+  #     documents)
+  # Events with only terminal deliveries, or no subscribers, are just
+  # history, so once they're old enough, age alone makes them prunable.
   scope :prunable, -> {
     dispatched
       .where(created_at: ..RETENTION.ago)
@@ -47,13 +50,13 @@ class Event < ApplicationRecord
   after_create_commit :dispatch, if: :dispatch_after_create
 
   class << self
-    # The subscriber is registered as a string, not a constant, for the
-    # same reason associations use class_name: as a string — dispatch
-    # resolves it with constantize at call time, so it always hits the
-    # currently loaded class across dev reloads (a captured constant would
-    # go stale, and a Set would build up one dead class object per reload).
-    # Calling constantize here too means a typo fails at registration, not
-    # on the first dispatch.
+    # Subscribers are registered by class name string, not constant — the
+    # same reason associations use class_name: as a string. dispatch
+    # resolves the string with constantize at call time, so it always hits
+    # the currently loaded class across dev reloads (a captured constant
+    # would go stale, and the Set would fill up with dead class objects).
+    # The eager constantize call below validates the string immediately,
+    # so a typo fails at registration instead of on first dispatch.
     def subscribe(action, job_class_name)
       job_class_name.constantize
       subscriptions[action] << job_class_name
@@ -65,17 +68,18 @@ class Event < ApplicationRecord
       @subscriptions ||= Hash.new { |hash, key| hash[key] = Set.new }
     end
 
-    # The message relay: re-dispatches events whose fanout was lost, so
-    # delivery is at-least-once. Runs on a schedule via Event::RelayJob.
-    # Errors are rescued per item so one bad event doesn't abort the sweep
-    # for the rest (a reported, still-stranded event stays visible to the
-    # next tick and to oldest_stranded_age). Returns the count swept, used
-    # as the relay's liveness signal.
+    # The message relay: re-dispatches events whose fanout was lost,
+    # making delivery at-least-once. Runs on a schedule via
+    # Event::RelayJob. Errors are rescued per event so one bad event
+    # doesn't abort the whole sweep — it stays stranded and visible to
+    # the next tick and to oldest_stranded_age. Returns the count swept,
+    # used as the relay's liveness signal.
     def relay_stranded
       swept = 0
 
-      # Bounded and oldest-first: at most RELAY_BATCH per tick (see the
-      # constant above), draining the longest-stranded events first.
+      # Bounded and oldest-first: at most RELAY_BATCH events per tick
+      # (see the constant above for why), draining the longest-stranded
+      # ones first.
       stranded.chronologically.limit(RELAY_BATCH).each do |event|
         event.dispatch
         swept += 1
@@ -86,20 +90,21 @@ class Event < ApplicationRecord
       swept
     end
 
-    # Age, in seconds, of the oldest event still waiting for its fanout;
-    # nil if nothing is waiting. Used as the relay's health check — if this
-    # grows past the sweep interval, the relay isn't running.
+    # Age in seconds of the oldest event still waiting for its fanout, or
+    # nil if none are waiting. Used as the relay's health check — if this
+    # exceeds the sweep interval, the relay isn't running.
     def oldest_stranded_age
       oldest = where(dispatched_at: nil).minimum(:created_at)
       oldest && Time.current - oldest
     end
 
-    # Deletes prunable events in batches, deliveries first (the foreign key
-    # demands it). delete_all on purpose: neither model has destroy
-    # callbacks, so skipping them changes nothing today, and a prune that
-    # instantiated ninety days of rows to fire no-op callbacks would be
-    # ceremony. The dependent: :destroy on the association stays for one-off
-    # console destroys. Returns the pruned count for the liveness signal.
+    # Deletes prunable events in batches, deliveries first since the
+    # foreign key requires it. Uses delete_all on purpose: neither model
+    # has destroy callbacks, so skipping them changes nothing, and
+    # instantiating 90 days of rows just to run no-op callbacks would be
+    # wasteful. The dependent: :destroy on the association is kept for
+    # one-off console destroys. Returns the pruned count, used as the
+    # liveness signal.
     def prune(batch_size: 500)
       pruned = 0
 
@@ -117,13 +122,14 @@ class Event < ApplicationRecord
     end
   end
 
-  # Upsert one delivery per subscriber, enqueue each, then mark the fanout
-  # done. dispatched_at means "delivery rows exist and the initial enqueue
-  # was attempted," not that each delivery actually succeeded — that's
-  # tracked on the delivery itself. A crash mid-fanout leaves dispatched_at
-  # nil, so the relay redoes the fanout; create_or_find_by! (insert-first,
-  # resolved by the unique index) makes that safe to repeat per delivery,
-  # and consumers stay idempotent since delivery is at-least-once anyway.
+  # Upserts one delivery per subscriber, enqueues each, then marks the
+  # fanout done. dispatched_at means "delivery rows exist and the initial
+  # enqueue was attempted" — whether each delivery actually landed is
+  # tracked separately. If a crash happens mid-fanout, dispatched_at stays
+  # nil and the relay redoes the fanout; create_or_find_by! (insert-first,
+  # resolved by a unique index) makes that safe to repeat per delivery,
+  # and consumers still need to be idempotent since delivery is
+  # at-least-once.
   def dispatch
     return if dispatched?
 

@@ -1,8 +1,8 @@
 class Event::PruneJob < ApplicationJob
   queue_as :default
 
-  # Retention enforcement, daily. The notify line mirrors the relay's
-  # liveness signal: a monitor alerts on its absence.
+  # Runs daily to enforce retention. The notify call mirrors the relay's
+  # liveness signal — a monitor alerts if it goes missing.
   def perform
     pruned = Event.prune
 
