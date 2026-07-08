@@ -4,16 +4,17 @@ require "timeout"
 class Order::ConfirmationJob < ApplicationJob
   queue_as :default
 
-  # Transient errors specific to this subscriber. The confirmation job owns
-  # the mail server, which is the flaky dependency here: a briefly busy or
-  # slow SMTP endpoint isn't a reason to stop and wait for a human, just a
-  # reason to back off and retry. Deadlocks (transient for every subscriber)
-  # are handled in ApplicationJob instead.
+  # Retry list for this subscriber only, since it owns the flaky dependency:
+  # the mail server. A busy or slow SMTP server should retry, not page a
+  # human. Deadlocks are transient for every subscriber, so those live on
+  # ApplicationJob instead.
   #
-  # net/smtp and timeout are required explicitly so their constants are
-  # available when retry_on is evaluated. Otherwise ActionMailer would only
-  # load net/smtp on the first delivery.
+  # net/smtp and timeout are required here so their constants exist when
+  # retry_on is evaluated at load time — ActionMailer only loads net/smtp
+  # on the first actual delivery.
   retry_on Net::SMTPServerBusy, Timeout::Error, wait: :polynomially_longer, attempts: 5
 
-  def perform(event) = Order::Confirmation.record(event)
+  def perform(delivery)
+    delivery.fulfill { |event| Order::Confirmation.record(event) }
+  end
 end

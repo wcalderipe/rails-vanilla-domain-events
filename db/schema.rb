@@ -10,7 +10,20 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_06_000003) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_07_000001) do
+  create_table "event_deliveries", force: :cascade do |t|
+    t.integer "attempts", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.datetime "delivered_at"
+    t.string "error"
+    t.integer "event_id", null: false
+    t.datetime "failed_at"
+    t.string "subscriber", null: false
+    t.datetime "updated_at", null: false
+    t.index ["event_id", "subscriber"], name: "index_event_deliveries_on_event_id_and_subscriber", unique: true
+    t.index ["updated_at"], name: "index_event_deliveries_pending_scan", where: "delivered_at IS NULL AND failed_at IS NULL"
+  end
+
   create_table "events", force: :cascade do |t|
     t.string "action", null: false
     t.datetime "created_at", null: false
@@ -61,4 +74,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_06_000003) do
     t.integer "quantity", default: 1, null: false
     t.datetime "updated_at", null: false
   end
+
+  add_foreign_key "event_deliveries", "events"
 end

@@ -34,15 +34,28 @@ class EventTest < ActiveSupport::TestCase
     end
   end
 
-  test "dispatch enqueues one job per subscriber and marks the fanout done" do
+  test "dispatch creates one delivery per subscriber, enqueues each, and marks the fanout done" do
     event = @order.publish_event("order.paid", item: @order.item, quantity: 1)
 
     assert_enqueued_jobs 2 do
       event.dispatch
     end
     assert event.dispatched?
-    assert_enqueued_with job: Order::ConfirmationJob, args: [ event ]
-    assert_enqueued_with job: Inventory::AdjustmentJob, args: [ event ]
+    assert_equal %w[Inventory::AdjustmentJob Order::ConfirmationJob], event.deliveries.pluck(:subscriber).sort
+    event.deliveries.each do |delivery|
+      assert_enqueued_with job: delivery.subscriber.constantize, args: [ delivery ]
+      assert_equal 0, delivery.attempts # attempts counts executions, not this enqueue
+    end
+  end
+
+  test "re-running dispatch after a mid-fanout crash does not duplicate deliveries" do
+    event = @order.publish_event("order.paid", item: @order.item, quantity: 1)
+    Event::Delivery.create!(event:, subscriber: "Order::ConfirmationJob")
+
+    event.dispatch
+
+    assert_equal 2, event.deliveries.count
+    assert_equal 1, event.deliveries.where(subscriber: "Order::ConfirmationJob").count
   end
 
   test "dispatch is a no-op when the fanout already completed" do

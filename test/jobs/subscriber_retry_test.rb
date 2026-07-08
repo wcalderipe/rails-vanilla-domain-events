@@ -33,6 +33,10 @@ class SubscriberRetryTest < ActiveJob::TestCase
     BrittleJob.performed_attempts = []
   end
 
+  teardown do
+    Event.dispatch_after_create = true
+  end
+
   test "a declared transient failure is re-enqueued instead of raising" do
     FlakyJob.perform_now(fail_times: 99)
 
@@ -67,11 +71,13 @@ class SubscriberRetryTest < ActiveJob::TestCase
     assert_no_enqueued_jobs
   end
 
-  test "a subscriber job whose event row is gone is discarded, not parked" do
+  test "a subscriber job whose delivery row is gone is discarded, not parked" do
+    Event.dispatch_after_create = false
     order = orders(:keyboard)
     event = order.publish_event("order.paid", item: order.item, quantity: order.quantity)
-    Order::ConfirmationJob.perform_later(event)
-    event.delete
+    delivery = Event::Delivery.create!(event:, subscriber: "Order::ConfirmationJob")
+    Order::ConfirmationJob.perform_later(delivery)
+    delivery.delete
 
     assert_nothing_raised do
       perform_enqueued_jobs

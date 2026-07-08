@@ -1,5 +1,7 @@
 class Inventory::AdjustmentJob < ApplicationJob
   queue_as :default
 
-  def perform(event) = Inventory::Adjustment.apply(event)
+  def perform(delivery)
+    delivery.fulfill { |event| Inventory::Adjustment.apply(event) }
+  end
 end
