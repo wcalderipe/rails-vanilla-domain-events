@@ -21,7 +21,7 @@ bin/demo        # the guided walkthrough from chapter 1, still green
 
 ## How to read this repo
 
-Reliable eventing is a chain of questions, each one only askable once the previous is answered. This repo is organized as that chain: `main` states the problem and holds the naive starting point (`Rails.event.notify`, a log line and nothing more); each chapter lives on its own branch, takes the next question, changes the code to answer it, and extends this same document. This branch is chapter 7.
+Reliable eventing is a chain of questions, each one only askable once the previous is answered. This repo is organized as that chain: `main` states the problem and holds the naive starting point (`Rails.event.notify`, a log line and nothing more); each chapter lives on its own branch, takes the next question, changes the code to answer it, and extends this same document. This branch is chapter 8.
 
 Earlier chapters are not repeated here; each link below goes to that chapter's README.
 
@@ -31,68 +31,50 @@ Earlier chapters are not repeated here; each link below goes to that chapter's R
 4. [Who guards the guard?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/4-who-guards-the-guard)
 5. [Did we say it twice?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/5-did-we-say-it-twice)
 6. [In what order do facts arrive?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/6-in-what-order-do-facts-arrive)
-7. **What exactly did we say? (📍 you're here)**
-8. [How long do we remember?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/8-how-long-do-we-remember)
+7. [What exactly did we say?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/7-what-exactly-did-we-say)
+8. **How long do we remember? (📍 you're here)**
 9. [What breaks when we leave SQLite?](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/9-what-breaks-when-we-leave-sqlite)
 
-## Question 7: What exactly did we say?
+## Question 8: How long do we remember?
 
-Every chapter so far moves facts around without reading them. The consumers do read them: `Inventory::Adjustment.apply` reaches into `event.payload` for `"item"` and `"quantity"` and trusts both to exist and to make sense. Nobody promised that. The payload is a contract with no owner, and the machinery built in chapters 2 and 3 makes breaking it expensive in a specific, measurable way.
+Every chapter so far adds rows and none removes any. Events accumulate forever, and they are not neutral bytes: the `order.paid` payload carries `customer_email`, literally personal data aging into liability. Chapter 1 sold the events table as an audit trail for free; retention is the price tag. The log is an audit trail until the window closes, and where that window sits is a business decision (audit obligations pull it longer, privacy pulls it shorter). The mechanism here only enforces whatever the business decided; `Event::RETENTION` is that decision as a constant.
 
-### The burn
+### Why naive pruning is dangerous
 
-Publish an `order.paid` whose payload is missing `quantity` and watch the layers do exactly what they were built to do. The consumer raises `KeyError`. The error is not declared transient, so the job parks. The delivery stays pending, so tier 2 redelivers after `REDELIVER_AFTER`. The payload is still malformed, so it parks again. Only after `MAX_ATTEMPTS` redeliveries does the delivery land in `failed` and page a human: the whole redelivery budget spent retrying something that could never succeed. The first commit on this branch is a test pinning that waste (`d487f30`); the fix flips it.
+Deleting old rows looks harmless, and it is not, because of an interaction bought in chapter 2. Subscriber jobs carry their delivery by reference (GlobalID). Delete an event whose job has not run yet, and the delivery goes with it (`dependent: :destroy`), the job deserializes nothing, and `discard_on ActiveJob::DeserializationError` swallows the error, which is exactly what it is for. The effect is dropped with no trace: no confirmation, no failed delivery, nothing terminal for a human to find. The first commit on this branch is a test pinning that silent drop; it stays green as permanent documentation of why the guard below exists.
 
-A contract violation is not a blink. Chapter 2 sorted errors into transient (retry) and unexpected (park, visible); this chapter adds the third kind: never retryable, and the sooner it fails terminally, the sooner someone fixes the emitter.
+### The guard: old enough AND owing nothing
+
+```ruby
+scope :prunable, -> {
+  dispatched
+    .where(created_at: ..RETENTION.ago)
+    .where.not(id: Event::Delivery.pending.select(:event_id))
+}
+```
+
+Three conditions, each earning its place. Dispatched: an undispatched event still owes its whole fanout, however old, and tier 1 of the relay may yet recover it. Older than the window: youth alone protects the rest. No pending delivery: a pending delivery is work the relay may still re-drive, and deleting the event under it is the silent drop above. Terminal deliveries and zero-subscriber events are memory, not work, so age alone decides for them.
 
 ```mermaid
 sequenceDiagram
-  participant J as Subscriber job
-  participant D as Delivery
-  participant R as RelayJob (tier 2)
+  participant P as Event::PruneJob (daily)
+  participant E as events
+  participant D as event_deliveries
 
-  rect rgb(255, 235, 235)
-    note over J,R: before: the burn
-    J->>D: fulfill raises KeyError
-    loop MAX_ATTEMPTS times
-      R->>J: redeliver after REDELIVER_AFTER
-      J->>D: raises again, still pending
-    end
-    R->>D: failed_at (budget exhausted, human paged late)
-  end
+  P->>E: prunable: dispatched, older than RETENTION,<br/>no pending delivery
+  E-->>P: batch of ids
+  P->>D: delete deliveries for the batch
+  P->>E: delete the batch
+  note over P: Rails.event.notify("event_prune.swept", pruned: n)
 
-  rect rgb(235, 245, 235)
-    note over J,D: after: first execution is terminal
-    J->>D: fulfill rescues ContractViolation
-    D->>D: failed_at + error message, effect rolled back
-    note over D: Rails.error.report pages a human now
-  end
+  note over E,D: the naive path this guard forbids:
+  note over E,D: delete by age alone, pending delivery dies with its event,<br/>enqueued job deserializes nothing, discard_on swallows it,<br/>effect lost with no trace
 ```
 
-### Who owns what
+`Event.prune` deletes in batches, deliveries first because the foreign key demands it, with `delete_all` on purpose: neither model has destroy callbacks, so instantiating ninety days of rows to fire no-op callbacks would be ceremony. The `dependent: :destroy` on the association stays for one-off console destroys. The daily `Event::PruneJob` reports `event_prune.swept` with the pruned count, the same liveness-signal shape the relay uses: a monitor alerts when the signal goes quiet.
 
-The rules are documentation plus one error class, not machinery:
+What stays out: archival. Moving old events to cold storage instead of deleting them is a legitimate option this chapter acknowledges in one line and does not build.
 
-- The emitter owns the schema. What `order.paid` says is `Order#pay`'s decision, and the schema's source of truth is the emitter's own tests: `test/models/order/contract_test.rb` pins each action's payload shape, so renaming or removing a key breaks the build on the emitter's side instead of production on the consumer's side.
-- The consumer owns its requirements. `Inventory::Adjustment` declares what it needs at the fetch site: `required(event, "item")`, a quantity that is a positive integer. A missing or malformed value raises `Event::ContractViolation` with a message that names the action and the key.
-- Consumers are tolerant readers. Unknown keys never break anyone (pinned by test), which is what makes evolution additive: add keys freely; to rename or remove one, migrate the consumers first and let the emitter's contract test force the conversation.
+### The limit: what breaks when we leave SQLite?
 
-### The mechanism: one rescue in fulfill
-
-`Event::Delivery#fulfill` treats the violation as the terminal state it is:
-
-```ruby
-rescue Event::ContractViolation => violation
-  mark_failed(error: violation.message)
-end
-```
-
-First execution, delivery `failed`, `Rails.error.report` fires through the existing `mark_failed` path, zero redeliveries spent. One subtlety is load-bearing: the raise crosses the effect transaction's boundary, so any partial write the consumer made rolls back, and the failed stamp then commits in its own transaction. The tests pin both halves (rolled-back effect, persisted stamp), plus the healthy sibling subscriber delivering untouched, and the contrast case: an unexpected `RuntimeError` still propagates and stays pending, because an unexpected error might genuinely be a blink and tier 2 exists for exactly that.
-
-### Why no schema gem
-
-A JSON Schema (or a registry table) would declare the same requirements in a second language, add a dependency, and still need the consumer to decide what happens on violation, which is the only part that was ever hard. Explicit fetches say what is required, the error class says what happens when it is not, and the emitter's tests say what is sent. Every piece is plain Ruby a reader already knows how to inspect.
-
-### The limit: how long do we remember?
-
-Facts now have identity, order posture, and a contract. They also accumulate forever: every event, every delivery, every effect row, growing without bound, and the jobs in flight hold references into those tables. Deciding how long the log lives, and what pruning it can break, is the next question: **How long do we remember?**
+Retention closes the lifecycle: facts are born atomically, announced at least once, acted on exactly once per subscriber or terminally failed, and now forgotten on schedule. Everything above holds on the engine this app runs. The last question is which of those guarantees were properties of the design and which were properties of SQLite: **What breaks when we leave SQLite?**
