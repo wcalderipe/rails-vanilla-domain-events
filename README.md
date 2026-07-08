@@ -43,11 +43,11 @@ You committed a state change and need the rest of the system to react: send the 
 - Enqueueing a job per side effect at the call site scatters the fan-out across emitters, and a crash between the DB commit and the enqueue silently loses the reaction.
 - In-memory pub/sub (wisper-style buses, `ActiveSupport::Notifications`) evaporates on any crash or restart: there is no record that the event ever happened.
 
-The failure mode that matters is always the same dual write: the domain database commits, the queue never hears about it, and the missed side effect (an email never sent, access never granted) surfaces as a support ticket, not an error.
+The failure mode that matters is always the same dual write. The domain database commits, the queue never hears about it, and the missed side effect (an email never sent, access never granted) surfaces as a support ticket, not an error.
 
 ## Question 1: Did we tell the queue?
 
-The fact is committed. Between that commit and the moment every subscriber job sits safely in the queue, there is a window where the process can die — and with it, the announcement. This question is what the transactional outbox answers, and everything on `main` exists to answer it: the guarantee provided here is **at-least-once enqueue**.
+The fact is committed. Between that commit and the moment every subscriber job sits safely in the queue, there is a window where the process can die, and with it the announcement. This question is what the transactional outbox answers, and everything on `main` exists to answer it: the guarantee provided here is **at-least-once enqueue**.
 
 ### The gap, precisely
 
@@ -105,7 +105,7 @@ If subscribers multiply or need per-destination visibility, the next step is a d
 
 This app uses Rails 8 defaults: Solid Queue in production with its own SQLite database (`queue` in `config/database.yml`), separate from the primary. Enqueue and domain commit therefore cannot share a transaction, which is exactly why the gap exists and the relay earns its place. Even an all-SQLite setup has the dual write.
 
-If you point Solid Queue at the same database as the domain, you can enqueue inside the transaction and get atomicity for free: the marker + relay become unnecessary. Note the enqueue point has to move too — dispatch currently fires from `after_create_commit`, which by definition runs after the transaction; co-locating the databases alone does not close the gap. The pattern here is for every topology where that co-location is not true (separate queue DB, Redis-backed queues, a domain DB different from the queue DB) or not stable (you might split later).
+If you point Solid Queue at the same database as the domain, you can enqueue inside the transaction and get atomicity for free: the marker and relay become unnecessary. Note that the enqueue point has to move too. Dispatch currently fires from `after_create_commit`, which by definition runs after the transaction; co-locating the databases alone does not close the gap. The pattern here is for every topology where that co-location is not true (separate queue DB, Redis-backed queues, a domain DB different from the queue DB) or not stable (you might split later).
 
 ### Design choices
 
@@ -122,7 +122,7 @@ If you point Solid Queue at the same database as the domain, you can enqueue ins
 | Replay and backfill | A new subscriber can be fed from the table by re-dispatching (enabled by the design; not wired in this demo) | re-dispatch over `Event` scopes |
 | Deterministic crash testing | An internal seam turns off dispatch-after-create to simulate the crash between commit and fanout | `Event.dispatch_after_create`, used by tests and `bin/demo` |
 
-Every choice is stock Rails — there is no library to learn and no broker to operate:
+Every choice is stock Rails. There is no library to learn and no broker to operate:
 
 | Guarantee | Stock Rails feature that provides it |
 |---|---|
@@ -144,4 +144,4 @@ Notes on the shape of the code:
 
 ## The next question: Did the thing actually happen?
 
-Everything above guarantees the announcement, not the reaction. Once every subscriber's `perform_later` has returned and `dispatched_at` is stamped, the event is outside the relay's view — whether the subscriber job then succeeds, fails, or is discarded is invisible to the outbox. Answering that question is the next chapter, on the branch [`2-did-the-thing-actually-happen`](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/2-did-the-thing-actually-happen).
+Everything above guarantees the announcement, not the reaction. Once every subscriber's `perform_later` has returned and `dispatched_at` is stamped, the event is outside the relay's view: whether the subscriber job then succeeds, fails, or is discarded is invisible to the outbox. Answering that question is the next chapter, on the branch [`2-did-the-thing-actually-happen`](https://github.com/wcalderipe/rails-vanilla-domain-events/tree/2-did-the-thing-actually-happen).
