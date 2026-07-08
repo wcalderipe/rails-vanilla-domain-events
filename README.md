@@ -78,7 +78,7 @@ end
 
 Insert-first, not check-then-act: a lookup before the insert would race exactly the way the consumers avoid by rescuing their unique indexes. The key joins the `attr_readonly` list because it is part of the fact. Republishing becomes a no-op that hands back the recorded event, so the caller cannot tell (and does not need to know) whether it was first.
 
-One detail in the rescue is easy to get wrong and worth stating: recovery reads through `Event`, not the `events` association. The index is **global** — a key is unique across *every* eventable, which is what makes it a free-standing identity (a Stripe event id belongs to the fact, not to one order). A scoped `events.find_by!` would look only inside the current eventable and raise `RecordNotFound` the moment the same key was first recorded against a different record — precisely the cross-record duplicate a global key exists to collapse. The index and the lookup have to agree on scope; both are global. Pinned in `test/models/event_publication_test.rb`.
+One detail in the rescue is easy to get wrong and worth stating: recovery reads through `Event`, not the `events` association. The index is **global**: a key is unique across *every* eventable, which is what makes it a free-standing identity (a Stripe event id belongs to the fact, not to one order). A scoped `events.find_by!` would look only inside the current eventable and raise `RecordNotFound` the moment the same key was first recorded against a different record. That is precisely the cross-record duplicate a global key exists to collapse. The index and the lookup have to agree on scope; both are global. Pinned in `test/models/event_publication_test.rb`.
 
 ```mermaid
 sequenceDiagram
