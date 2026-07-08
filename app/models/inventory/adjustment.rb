@@ -1,9 +1,9 @@
-# The inventory effect of order.paid. Idempotent by event id — the unique
-# index on event_id means the same event applies at most one adjustment, no
-# matter how many times the relay re-delivers it.
+# The inventory effect of order.paid. Idempotent by event id: the unique
+# index on event_id means one event applies at most one adjustment, no
+# matter how many times it's redelivered.
 #
-# Required keys are declared here, at the fetch site: the emitter owns the
-# payload schema, the consumer owns what it requires from it.
+# This consumer's required keys are declared here, at the fetch site: the
+# emitter owns the payload schema, the consumer owns what it requires from it.
 class Inventory::Adjustment < ApplicationRecord
   self.table_name = "inventory_adjustments"
 
@@ -12,12 +12,16 @@ class Inventory::Adjustment < ApplicationRecord
   validates :item, presence: true
   validates :delta, numericality: { other_than: 0 }
 
+  # requires_new: the savepoint that keeps the rescue safe on PostgreSQL
+  # (chapter 9).
   def self.apply(event)
-    create!(
-      event:,
-      item: required(event, "item"),
-      delta: -required_quantity(event)
-    )
+    transaction(requires_new: true) do
+      create!(
+        event:,
+        item: required(event, "item"),
+        delta: -required_quantity(event)
+      )
+    end
   rescue ActiveRecord::RecordNotUnique
     find_by(event_id: event.id)
   end
