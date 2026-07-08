@@ -1,11 +1,14 @@
 class Event::RelayJob < ApplicationJob
   queue_as :default
 
-  # Two tiers, both required. Tier 1 recovers a lost fanout (crash between
-  # commit and enqueue): a crash-gapped event has zero delivery rows, so a
-  # delivery-only scan would never see it. Tier 2 recovers a lost effect
-  # (job crashed, exhausted, or parked after enqueue): without it,
-  # dispatched_at says everything worked while a subscriber quietly never ran.
+  # Two passes, both needed.
+  #   - Pass 1 (relay_stranded) re-drives events whose fanout was lost — e.g.
+  #     a crash between commit and enqueue leaves zero delivery rows, so a
+  #     delivery-only scan would never find it.
+  #   - Pass 2 (redeliver_stale) re-drives deliveries whose effect never
+  #     landed — e.g. the job crashed, exhausted its retries, or got stuck
+  #     after enqueue. Without it, dispatched_at would say everything worked
+  #     while a subscriber quietly never ran.
   def perform
     Event.relay_stranded
     Event::Delivery.redeliver_stale
