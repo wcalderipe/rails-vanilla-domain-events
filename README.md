@@ -8,6 +8,9 @@ A guiding principle follows from that argument: lean on Rails and Solid Queue in
 
 Domain: an `Order` you can place, pay, and ship.
 
+> [!NOTE]
+> This is a domain event system for reactions, not an event store. Its job is to let other parts of the system react to facts that already happened: send the confirmation, adjust inventory, sync a third party. It is not built to be the source of truth you rebuild state from. You could grow it into an event stream by adding replay and snapshotting, but that is a different system with different guarantees, and this repo does not go there.
+
 > [!WARNING]
 > This is an experiment, not battle-tested production code. The mechanics are exercised by the test suites on each chapter branch, but the pattern has not carried production traffic. Read it as a reference implementation to study and adapt, not as something to vendor in as-is.
 
