@@ -41,7 +41,7 @@ Every chapter so far adds rows and none removes any. Events accumulate forever, 
 
 ### Why naive pruning is dangerous
 
-Deleting old rows looks harmless and is not, because of an interaction bought in chapter 2. Subscriber jobs carry their delivery by reference (GlobalID). Delete an event whose job has not run yet, the delivery goes with it (`dependent: :destroy`), the job deserializes nothing, and `discard_on ActiveJob::DeserializationError` swallows the error, which is exactly what it is for. The effect is dropped with no trace: no confirmation, no failed delivery, nothing terminal for a human to find. The first commit on this branch is a test pinning that silent drop; it stays green as permanent documentation of why the guard below exists.
+Deleting old rows looks harmless, and it is not, because of an interaction bought in chapter 2. Subscriber jobs carry their delivery by reference (GlobalID). Delete an event whose job has not run yet, and the delivery goes with it (`dependent: :destroy`), the job deserializes nothing, and `discard_on ActiveJob::DeserializationError` swallows the error, which is exactly what it is for. The effect is dropped with no trace: no confirmation, no failed delivery, nothing terminal for a human to find. The first commit on this branch is a test pinning that silent drop; it stays green as permanent documentation of why the guard below exists.
 
 ### The guard: old enough AND owing nothing
 
