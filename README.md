@@ -37,7 +37,7 @@ Earlier chapters are not repeated here; each link below goes to that chapter's R
 
 ## Question 6: In what order do facts arrive?
 
-The honest guarantee, stated plainly: this system is **unordered at-least-once**. Chapter 5 gave each fact an identity, so saying it twice collapses into once. Nothing anywhere promises that facts take effect in the order they happened, and this chapter's answer is not to add that promise. It is to show that emission order and processing order are different things, that the consumers already in this repo never needed the promise, and to name the posture that makes that true.
+The honest guarantee, stated plainly: this system is **unordered at-least-once**. Chapter 5 gave each fact an identity, so saying it twice collapses into once. Nothing anywhere promises that facts take effect in the order they happened, and this chapter's answer is not to add that promise. It is to show that emission order and processing order are different things, that the consumers already in this repo never needed the promise, and that naming the posture behind that fact is enough.
 
 This chapter adds no application code. The tests and this document are the whole change.
 
