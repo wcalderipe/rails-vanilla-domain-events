@@ -29,7 +29,7 @@ class EventRelayGuardTest < ActiveSupport::TestCase
 
     assert gapped.reload.dispatched?
     assert_equal 2, gapped.deliveries.count
-    assert_equal 0, stale.reload.attempts # redelivery enqueues; attempts counts executions (N2)
+    assert_equal 0, stale.reload.attempts # redelivery enqueues; attempts counts executions
     assert_equal [ [ "event_relay.swept", { stranded: 1, redelivered: 1, failed: 0 } ] ], signals
     assert_nil Event.oldest_stranded_age
   end
@@ -50,7 +50,7 @@ class EventRelayGuardTest < ActiveSupport::TestCase
       signals = capture_relay_signal { Event::RelayJob.perform_now }
 
       assert healthy_event.reload.dispatched?
-      assert_equal 0, healthy_delivery.reload.attempts # redelivery enqueues; attempts counts executions (N2)
+      assert_equal 0, healthy_delivery.reload.attempts # redelivery enqueues; attempts counts executions
       assert_not poison_event.reload.dispatched?
       assert_not poison_delivery.reload.terminal?
       assert_equal [ [ "event_relay.swept", { stranded: 1, redelivered: 1, failed: 0 } ] ], signals
@@ -84,7 +84,7 @@ class EventRelayGuardTest < ActiveSupport::TestCase
 
     assert_equal 1, redelivered
     assert_equal 0, failed
-    assert_equal 0, healthy.reload.attempts # redelivery enqueues; attempts counts executions (N2)
+    assert_equal 0, healthy.reload.attempts # redelivery enqueues; attempts counts executions
     assert_not poison.reload.terminal?
     assert_enqueued_with job: Order::ConfirmationJob, args: [ healthy ]
   end

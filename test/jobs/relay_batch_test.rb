@@ -1,6 +1,6 @@
 require "test_helper"
 
-# N1: chapter 4's concurrency semaphore is a fixed-TTL lease, not a lock held
+# Chapter 4's concurrency semaphore is a fixed-TTL lease, not a lock held
 # for the job's lifetime. A relay tick that runs longer than the lease
 # (default 3 min) has the lease reaped WHILE IT IS STILL RUNNING, and the next
 # scheduled tick runs concurrently — reintroducing the double-dispatch the
