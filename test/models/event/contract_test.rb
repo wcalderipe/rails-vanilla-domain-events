@@ -20,7 +20,7 @@ class Event::ContractTest < ActiveSupport::TestCase
 
     assert delivery.reload.failed?
     assert_equal "order.paid payload is missing quantity", delivery.error
-    assert_equal 1, delivery.attempts # one execution happened; it failed terminally (N2)
+    assert_equal 1, delivery.attempts # one execution happened; it failed terminally
   end
 
   test "a non-integer quantity fails the delivery on the first execution" do
