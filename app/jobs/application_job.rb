@@ -1,7 +1,9 @@
 class ApplicationJob < ActiveJob::Base
-  # Retry jobs that hit a deadlock
-  # retry_on ActiveRecord::Deadlocked
+  # These two are commented out by default in a generated Rails app. We enable
+  # them here because:
+  #   - Deadlocks are transient for every subscriber.
+  #   - A subscriber job whose event row is gone can never succeed by retrying.
+  retry_on ActiveRecord::Deadlocked
 
-  # Safe to discard if the underlying record is gone
-  # discard_on ActiveJob::DeserializationError
+  discard_on ActiveJob::DeserializationError
 end
